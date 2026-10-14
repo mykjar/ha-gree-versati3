@@ -104,6 +104,7 @@ What it never does: change power, mode, hot water or cooling; write outside the 
 | Suggested water setpoint | The whole-degree setpoint it would set now. |
 | Target water temperature, Curve water temperature | The calculation before rounding, and the curve's part of it. |
 | Learned curve offset | What learning currently adds to the curve. |
+| Smoothed outdoor temperature | The outdoor temperature the curve uses, after averaging. |
 | Floor heating status | See below. |
 | Curve cold point / mild point (outdoor, water), Room correction | Tuning, also available under `Configure`. |
 | Learn curve offset, Reset learned offset | Turn learning on or off, or forget what it learned. |
@@ -136,23 +137,19 @@ What it never does: change power, mode, hot water or cooling; write outside the 
 
 If `Learned curve offset` sits near ±3 °C, the curve is off by about that much. Calibrating fixes the curve and clears the offset.
 
-### Dashboard
+### Dashboard card
 
-A graph to watch it with, replacing `<device_id>` and the two sensors with your own:
+The integration includes a card for watching the controller. It loads automatically once control is enabled, with no separate install. Edit a dashboard, `Add card`, and search for **Gree Versati floor heating**. It picks your Floor heating thermostat by itself. In YAML:
 
 ```yaml
-type: history-graph
-title: Floor heating
-hours_to_show: 72
-entities:
-  - entity: sensor.indoor_average
-  - entity: sensor.outdoor_average
-  - entity: sensor.gree_versati_<device_id>_target_water_temperature
-  - entity: sensor.gree_versati_<device_id>_suggested_water_setpoint
-  - entity: number.gree_versati_<device_id>_heating_water_outlet_setpoint
-  - entity: sensor.gree_versati_<device_id>_water_outlet_temperature
-  - entity: sensor.gree_versati_<device_id>_learned_curve_offset
+type: custom:gree-versati-floor-heating-card
+entity: climate.gree_versati_<device_id>_floor_heating
+hours_to_show: 72  # optional
 ```
+
+It shows two graphs:
+- **Floor heating water:** the controller's target and the curve on its own, against the pump's setpoint and the measured water. In advisory mode this is where you see what it would do.
+- **Room and outdoor:** the room against its target, with heating periods shaded, and the smoothed outdoor temperature.
 
 ## Getting `device_id` and `key`
 

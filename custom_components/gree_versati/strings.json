@@ -184,6 +184,9 @@
           "write_failed": "Setpoint change failed",
           "write_ignored": "Pump ignored the setpoint change"
         }
+      },
+      "heating_outdoor_temperature": {
+        "name": "Smoothed outdoor temperature"
       }
     },
     "climate": {

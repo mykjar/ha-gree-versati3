@@ -170,7 +170,7 @@ class HeatingSensorDescription(SensorEntityDescription):
     value_fn: Callable[[Decision], StateType | datetime]
 
 
-def _water_temperature(
+def _temperature(
     key: str, value_fn: Callable[[Decision], float | None], precision: int = 1
 ) -> HeatingSensorDescription:
     return HeatingSensorDescription(
@@ -185,11 +185,11 @@ def _water_temperature(
 
 
 HEATING_SENSORS: tuple[HeatingSensorDescription, ...] = (
-    _water_temperature("heating_curve_water_temperature", lambda d: d.curve_flow),
-    _water_temperature("heating_target_water_temperature", lambda d: d.target_flow),
-    _water_temperature(
-        "heating_suggested_setpoint", lambda d: d.suggested_setpoint, precision=0
-    ),
+    _temperature("heating_curve_water_temperature", lambda d: d.curve_flow),
+    _temperature("heating_target_water_temperature", lambda d: d.target_flow),
+    _temperature("heating_suggested_setpoint", lambda d: d.suggested_setpoint, precision=0),
+    # The outdoor temperature as the curve sees it, after smoothing.
+    _temperature("heating_outdoor_temperature", lambda d: d.outdoor),
     # A temperature difference: no device class, so it is never unit-converted.
     HeatingSensorDescription(
         key="heating_learned_offset",
