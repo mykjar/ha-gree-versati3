@@ -12,6 +12,7 @@ from homeassistant.helpers.storage import Store
 
 from ..constants import STATUS_POLL_KEYS
 from ..coordinator import GreeVersatiCoordinator
+from .card import async_register_card
 from .const import CONF_HEATING_ENABLED, STORAGE_VERSION, storage_key
 from .controller import HeatingController
 
@@ -38,6 +39,7 @@ async def async_setup_heating(
     except Exception:  # Never take the pump's own entities down with it.
         _LOGGER.exception("Floor heating control failed to start and stays off")
         return None
+    async_register_card(hass)
     return controller
 
 

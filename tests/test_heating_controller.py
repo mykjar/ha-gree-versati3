@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
 from homeassistant.components.climate import (
@@ -40,6 +41,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.setup import async_setup_component
 
 from custom_components.gree_versati.client import (
     GreeVersatiClientError,
@@ -653,3 +655,38 @@ async def test_resume_ends_a_manual_change_pause(
     freezer.tick(timedelta(minutes=25))
     await poll(hass, entry)
     assert pump.writes[-1] == {"HeWatOutTemSet": 24}
+
+
+# Dashboard card
+
+
+async def test_dashboard_card_is_served_and_loaded(
+    hass: HomeAssistant, pump: FakePump, hass_client: ClientSessionGenerator
+) -> None:
+    assert await async_setup_component(hass, "http", {})
+    hass.config.components.add("frontend")
+
+    with patch("custom_components.gree_versati.heating.card.add_extra_js_url") as add_js:
+        await setup(hass)
+
+    add_js.assert_called_once()
+    assert add_js.call_args.args[1].startswith("/gree_versati/floor-heating-card.js?v=")
+    response = await (await hass_client()).get("/gree_versati/floor-heating-card.js")
+    assert response.status == 200
+    assert "customElements.define" in await response.text()
+
+
+async def test_dashboard_card_needs_control_enabled(hass: HomeAssistant, pump: FakePump) -> None:
+    assert await async_setup_component(hass, "http", {})
+    hass.config.components.add("frontend")
+
+    with patch("custom_components.gree_versati.heating.card.add_extra_js_url") as add_js:
+        await setup(hass, options={})
+
+    add_js.assert_not_called()
+
+
+async def test_smoothed_outdoor_temperature_sensor(hass: HomeAssistant, pump: FakePump) -> None:
+    await setup(hass, outdoor="-3.5")
+
+    assert float(state(hass, "sensor", "heating_outdoor_temperature").state) == -3.5
