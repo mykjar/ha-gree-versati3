@@ -20,6 +20,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import ATTR_TEMPERATURE, PRECISION_TENTHS, EntityCategory, UnitOfTemperature
 from homeassistant.core import Event, EventStateChangedData, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -213,6 +214,29 @@ class HeatingSensor(HeatingEntity, SensorEntity):
         """Value from the latest control step."""
         decision = self.decision
         return self.entity_description.value_fn(decision) if decision else None
+
+
+class WriteToPumpSwitch(HeatingEntity, SwitchEntity):
+    """Off: advisory only. On: the controller sets the pump's water setpoint."""
+
+    _attr_translation_key = "heating_write"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, controller: HeatingController, device_id: str) -> None:
+        super().__init__(controller, device_id, "heating_write")
+
+    @property
+    def is_on(self) -> bool:
+        """Whether the controller writes to the pump."""
+        return self.coordinator.core.state.write_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Let the controller set the pump's water setpoint."""
+        await self.coordinator.async_set_write_enabled(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Go back to advisory mode; the pump keeps its current setpoint."""
+        await self.coordinator.async_set_write_enabled(False)
 
 
 class CalibrateCurveButton(HeatingEntity, ButtonEntity):

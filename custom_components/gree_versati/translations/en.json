@@ -40,7 +40,7 @@
       },
       "heating": {
         "title": "Floor heating control",
-        "description": "Adjusts the heating water setpoint from an outdoor-temperature curve, nudged by the indoor temperature. This version is advisory only: it shows the setpoint it would use but never changes the pump.",
+        "description": "Adjusts the heating water setpoint from an outdoor-temperature curve, nudged by the indoor temperature. It starts in advisory mode: it shows the setpoint it would use but only changes the pump once you turn on its \"Write to pump\" switch.",
         "data": {
           "heating_enabled": "Enable floor heating control",
           "heating_indoor_sensor": "Indoor temperature sensor",
@@ -90,6 +90,9 @@
     "switch": {
       "power_control": {
         "name": "Power"
+      },
+      "heating_write": {
+        "name": "Write to pump"
       }
     },
     "select": {

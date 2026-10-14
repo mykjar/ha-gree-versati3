@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -21,8 +22,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from ..client import GreeVersatiClientError
 from ..constants import (
     DOMAIN,
+    MAX_HE_WAT_OUT_TEMP_SET,
+    MIN_HE_WAT_OUT_TEMP_SET,
     MODE_OPTIONS,
     PARAM_ALL_ERR,
     PARAM_ALL_IN_WAT_TEM,
@@ -125,8 +129,6 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         """Pick up where the controller left off before a restart."""
         if (saved := await self._store.async_load()) is not None:
             self.core.state = ControlState.from_dict(saved)
-        # This release only advises: it shows the setpoint it would use.
-        self.core.set_write_enabled(False)
         self._loaded = True
 
     async def async_shutdown(self) -> None:
@@ -138,17 +140,51 @@ class HeatingController(DataUpdateCoordinator[Decision]):
 
     async def _async_update_data(self) -> Decision:
         pump = self._pump_data
+        now = dt_util.utcnow().timestamp()
+        setpoint = _as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None
         decision = self.core.step(
             Inputs(
-                now=dt_util.utcnow().timestamp(),
+                now=now,
                 outdoor=self.temperature(self.outdoor_entity_id),
                 indoor=self.temperature(self.indoor_entity_id),
-                setpoint=_as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None,
+                setpoint=setpoint,
                 hold=pump_hold(pump),
                 space_heating=space_heating(pump),
             )
         )
+        if decision.write is not None:
+            decision = await self._async_write(decision, decision.write, setpoint, now)
         self._save()
+        return decision
+
+    async def _async_write(
+        self, decision: Decision, value: int, previous: int | None, now: float
+    ) -> Decision:
+        # Settings are checked when saved, but never send the pump anything
+        # outside its own range.
+        if not MIN_HE_WAT_OUT_TEMP_SET <= value <= MAX_HE_WAT_OUT_TEMP_SET:
+            _LOGGER.error("Refusing to set the floor water setpoint to %s °C", value)
+            self.core.record_write_failure(now)
+            return replace(decision, status=Status.WRITE_FAILED, write=None)
+        try:
+            await self.pump.client.async_set({PARAM_HE_WAT_OUT_TEM_SET: value})
+        except GreeVersatiClientError as err:
+            _LOGGER.warning("Could not set the floor water setpoint to %s °C: %s", value, err)
+            self.core.record_write_failure(now)
+            return replace(decision, status=Status.WRITE_FAILED, write=None)
+
+        self.core.record_write(value, previous, now)
+        _LOGGER.info(
+            "Floor water setpoint %s -> %s °C (outdoor %.1f °C, curve %.1f °C, "
+            "room correction %+.1f °C, target %.1f °C)",
+            previous,
+            value,
+            decision.outdoor,
+            decision.curve_flow,
+            decision.correction,
+            decision.target_flow,
+        )
+        await self.pump.async_request_refresh()
         return decision
 
     @property
@@ -193,6 +229,11 @@ class HeatingController(DataUpdateCoordinator[Decision]):
     async def async_set_active(self, active: bool) -> None:
         """Pause control (Off) or resume it (Heat)."""
         self.core.set_active(active)
+        await self._async_changed()
+
+    async def async_set_write_enabled(self, enabled: bool) -> None:
+        """Write to the pump, or only advise."""
+        self.core.set_write_enabled(enabled)
         await self._async_changed()
 
     async def async_calibrate(self) -> None:

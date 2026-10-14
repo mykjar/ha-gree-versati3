@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
@@ -19,12 +21,29 @@ from homeassistant.components.climate import (
     HVACAction,
     HVACMode,
 )
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_UNAVAILABLE
+from homeassistant.components.number import (
+    ATTR_VALUE,
+    DOMAIN as NUMBER_DOMAIN,
+    SERVICE_SET_VALUE,
+)
+from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    ATTR_TEMPERATURE,
+    SERVICE_TURN_OFF,
+    SERVICE_TURN_ON,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.gree_versati.client import GreeVersatiProtocolClient
+from custom_components.gree_versati.client import (
+    GreeVersatiClientError,
+    GreeVersatiProtocolClient,
+)
 from custom_components.gree_versati.constants import (
     CONF_SCAN_INTERVAL,
     DATA_COORDINATOR,
@@ -431,3 +450,115 @@ async def test_heating_options_are_checked(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {field: error}
+
+
+# Writing to the pump
+
+
+async def _switch_writing(hass: HomeAssistant, on: bool) -> None:
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_ON if on else SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id(hass, "switch", "heating_write")},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+
+async def test_writing_sets_the_pump_one_degree_at_a_time(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    assert state(hass, "switch", "heating_write").state == STATE_OFF
+
+    await _switch_writing(hass, True)
+    assert pump.writes == [{"HeWatOutTemSet": 26}]
+    assert state(hass, "number", "HeWatOutTemSet").state == "26.0"
+
+    # Colder room: the target rises past 27, but changes wait 30 minutes.
+    hass.states.async_set(INDOOR, "19.5", {"unit_of_measurement": "°C"})
+    freezer.tick(timedelta(minutes=10))
+    await poll(hass, entry)
+    assert state(hass, "sensor", "heating_status").state == "rate_limited"
+    assert len(pump.writes) == 1
+
+    freezer.tick(timedelta(minutes=21))
+    await poll(hass, entry)
+    assert pump.writes[-1] == {"HeWatOutTemSet": 27}
+    assert state(hass, "sensor", "heating_status").state == "active"
+
+
+@pytest.mark.parametrize(
+    ("change", "status"),
+    [({"Pow": 0}, "pump_off"), ({"SvSt": 1}, "w_depend_on"), ({"AllErr": 3}, "pump_error")],
+)
+async def test_holds_block_writing(
+    hass: HomeAssistant, pump: FakePump, change: dict[str, int], status: str
+) -> None:
+    pump.values.update(change)
+    await setup(hass)
+
+    await _switch_writing(hass, True)
+
+    assert pump.writes == []
+    assert state(hass, "sensor", "heating_status").state == status
+
+
+async def test_never_writes_above_the_maximum(hass: HomeAssistant, pump: FakePump) -> None:
+    pump.values["HeWatOutTemSet"] = 33  # set by hand above the floor's limit
+    await setup(hass, indoor="18.0", outdoor="-25.0")
+
+    await _switch_writing(hass, True)
+
+    assert pump.writes == [{"HeWatOutTemSet": 30}]
+
+
+async def test_manual_change_pauses_writing(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    await _switch_writing(hass, True)
+
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        SERVICE_SET_VALUE,
+        {ATTR_ENTITY_ID: entity_id(hass, "number", "HeWatOutTemSet"), ATTR_VALUE: 23},
+        blocking=True,
+    )
+    freezer.tick(timedelta(minutes=5))
+    await poll(hass, entry)
+
+    assert state(hass, "sensor", "heating_status").state == "manual_override"
+    assert state(hass, "climate", "floor_heating").attributes["manual_change_until"]
+    assert pump.values["HeWatOutTemSet"] == 23
+
+    freezer.tick(timedelta(hours=6))
+    await poll(hass, entry)
+    assert pump.writes[-1] == {"HeWatOutTemSet": 24}
+
+
+async def test_failed_write_is_reported(hass: HomeAssistant, pump: FakePump) -> None:
+    async def refuse(params: dict[str, Any]) -> None:
+        raise GreeVersatiClientError("no answer")
+
+    await setup(hass)
+    with patch.object(pump, "set", refuse):
+        await _switch_writing(hass, True)
+
+    assert state(hass, "sensor", "heating_status").state == "write_failed"
+    assert pump.values["HeWatOutTemSet"] == 25
+
+
+async def test_writing_survives_a_reload_and_can_be_turned_off(
+    hass: HomeAssistant, pump: FakePump
+) -> None:
+    entry = await setup(hass)
+    await _switch_writing(hass, True)
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert state(hass, "switch", "heating_write").state == STATE_ON
+
+    await _switch_writing(hass, False)
+    await poll(hass, entry)
+    assert state(hass, "sensor", "heating_status").state == "advisory"
