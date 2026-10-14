@@ -1,7 +1,7 @@
 {
   "domain": "gree_versati",
   "name": "Gree Versati 3 Local",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "documentation": "https://github.com/mykjar/ha-gree-versati3",
   "issue_tracker": "https://github.com/mykjar/ha-gree-versati3/issues",
   "codeowners": [
