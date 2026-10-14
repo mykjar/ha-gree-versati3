@@ -16,7 +16,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -49,10 +49,12 @@ from .const import (
     STALE_AFTER,
     STORAGE_VERSION,
     UPDATE_INTERVAL,
+    options_with_defaults,
     settings_from_options,
     storage_key,
 )
 from .curve import ControlState, Decision, HeatingCore, Inputs, Status, calibrated_curve
+from .options import validate_heating
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -236,6 +238,30 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         self.core.set_write_enabled(enabled)
         await self._async_changed()
 
+    async def async_set_learning_enabled(self, enabled: bool) -> None:
+        """Turn the slowly learned curve offset on or off."""
+        self.core.set_learning_enabled(enabled)
+        await self._async_changed()
+
+    async def async_reset_learning(self) -> None:
+        """Forget the learned curve offset."""
+        self.core.reset_learning()
+        await self._async_changed()
+
+    async def async_resume(self) -> None:
+        """End a pause after a manual change now."""
+        self.core.resume()
+        await self._async_changed()
+
+    async def async_set_option(self, key: str, value: float) -> None:
+        """Change one tuning value, checked as if saved in the options form."""
+        options = {**self._entry.options, key: value}
+        if errors := validate_heating(options_with_defaults(options)):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key=next(iter(errors.values()))
+            )
+        self.hass.config_entries.async_update_entry(self._entry, options=options)
+
     async def async_calibrate(self) -> None:
         """Shift the curve so it matches the setpoint the pump runs on now."""
         pump = self._pump_data
@@ -246,8 +272,7 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             outdoor = self.temperature(self.outdoor_entity_id)
         if setpoint is None or indoor is None or outdoor is None:
             raise HomeAssistantError(
-                "Calibration needs the indoor and outdoor temperatures and the "
-                "pump's current setpoint"
+                translation_domain=DOMAIN, translation_key="calibration_needs_readings"
             )
 
         curve = calibrated_curve(
@@ -288,6 +313,7 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             return False
         self._options = dict(options)
         self.core.settings = settings_from_options(options)
+        self.async_update_listeners()
         self.hass.async_create_task(self.async_request_refresh())
         return True
 

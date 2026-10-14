@@ -85,6 +85,21 @@
       },
       "wat_box_tem_set": {
         "name": "Water box temperature setpoint"
+      },
+      "heating_curve_cold_outdoor": {
+        "name": "Curve cold point: outdoor"
+      },
+      "heating_curve_cold_flow": {
+        "name": "Curve cold point: water"
+      },
+      "heating_curve_mild_outdoor": {
+        "name": "Curve mild point: outdoor"
+      },
+      "heating_curve_mild_flow": {
+        "name": "Curve mild point: water"
+      },
+      "heating_kp": {
+        "name": "Room correction"
       }
     },
     "switch": {
@@ -93,6 +108,9 @@
       },
       "heating_write": {
         "name": "Write to pump"
+      },
+      "heating_learning": {
+        "name": "Learn curve offset"
       }
     },
     "select": {
@@ -176,7 +194,27 @@
     "button": {
       "heating_calibrate": {
         "name": "Calibrate curve to current setpoint"
+      },
+      "heating_reset_learning": {
+        "name": "Reset learned offset"
+      },
+      "heating_resume": {
+        "name": "Resume floor heating control"
       }
+    }
+  },
+  "exceptions": {
+    "calibration_needs_readings": {
+      "message": "Calibration needs the indoor and outdoor temperatures and the pump's current setpoint."
+    },
+    "curve_outdoor_order": {
+      "message": "The mild point must be warmer outside than the cold point."
+    },
+    "curve_flow_order": {
+      "message": "The mild point can't need warmer water than the cold point."
+    },
+    "flow_range": {
+      "message": "The highest setpoint must be at least 1 °C above the lowest."
     }
   }
 }

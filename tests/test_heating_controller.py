@@ -38,6 +38,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.gree_versati.client import (
@@ -455,14 +456,18 @@ async def test_heating_options_are_checked(
 # Writing to the pump
 
 
-async def _switch_writing(hass: HomeAssistant, on: bool) -> None:
+async def _switch(hass: HomeAssistant, key: str, on: bool) -> None:
     await hass.services.async_call(
         SWITCH_DOMAIN,
         SERVICE_TURN_ON if on else SERVICE_TURN_OFF,
-        {ATTR_ENTITY_ID: entity_id(hass, "switch", "heating_write")},
+        {ATTR_ENTITY_ID: entity_id(hass, "switch", key)},
         blocking=True,
     )
     await hass.async_block_till_done()
+
+
+async def _switch_writing(hass: HomeAssistant, on: bool) -> None:
+    await _switch(hass, "heating_write", on)
 
 
 async def test_writing_sets_the_pump_one_degree_at_a_time(
@@ -562,3 +567,89 @@ async def test_writing_survives_a_reload_and_can_be_turned_off(
     await _switch_writing(hass, False)
     await poll(hass, entry)
     assert state(hass, "sensor", "heating_status").state == "advisory"
+
+
+# Tuning from a dashboard
+
+
+async def _set_number(hass: HomeAssistant, key: str, value: float) -> None:
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        SERVICE_SET_VALUE,
+        {ATTR_ENTITY_ID: entity_id(hass, "number", key), ATTR_VALUE: value},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+
+async def _press(hass: HomeAssistant, key: str) -> None:
+    await hass.services.async_call(
+        BUTTON_DOMAIN,
+        SERVICE_PRESS,
+        {ATTR_ENTITY_ID: entity_id(hass, "button", key)},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+
+async def test_tuning_numbers_retune_without_a_reload(
+    hass: HomeAssistant, pump: FakePump
+) -> None:
+    entry = await setup(hass)
+    before = controller(hass, entry)
+
+    await _set_number(hass, "heating_curve_cold_flow", 29)
+    await _set_number(hass, "heating_kp", 1.5)
+
+    assert entry.options[CONF_CURVE_COLD_FLOW] == 29
+    assert entry.options[CONF_KP] == 1.5
+    assert controller(hass, entry) is before
+    assert before.core.settings.curve.cold_flow == 29
+    assert state(hass, "number", "heating_curve_cold_flow").state == "29.0"
+    assert state(hass, "number", "heating_kp").state == "1.5"
+
+
+async def test_tuning_that_breaks_the_curve_is_refused(
+    hass: HomeAssistant, pump: FakePump
+) -> None:
+    entry = await setup(hass)
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await _set_number(hass, "heating_curve_mild_flow", 31)
+
+    assert raised.value.translation_key == "curve_flow_order"
+    assert CONF_CURVE_MILD_FLOW not in entry.options
+
+
+async def test_learning_can_be_paused_and_reset(hass: HomeAssistant, pump: FakePump) -> None:
+    entry = await setup(hass)
+    heating = controller(hass, entry)
+    heating.core.state.learned = 1.5
+
+    await _switch(hass, "heating_learning", False)
+    assert heating.core.state.learning_enabled is False
+    assert state(hass, "switch", "heating_learning").state == STATE_OFF
+
+    await _press(hass, "heating_reset_learning")
+    await poll(hass, entry)
+    assert float(state(hass, "sensor", "heating_learned_offset").state) == 0
+
+
+async def test_resume_ends_a_manual_change_pause(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    await _switch_writing(hass, True)
+    pump.values["HeWatOutTemSet"] = 23
+    freezer.tick(timedelta(minutes=5))
+    await poll(hass, entry)
+    assert state(hass, "sensor", "heating_status").state == "manual_override"
+
+    await _press(hass, "heating_resume")
+    await poll(hass, entry)
+
+    # Control is back, still keeping 30 minutes between changes.
+    assert state(hass, "sensor", "heating_status").state == "rate_limited"
+    freezer.tick(timedelta(minutes=25))
+    await poll(hass, entry)
+    assert pump.writes[-1] == {"HeWatOutTemSet": 24}
