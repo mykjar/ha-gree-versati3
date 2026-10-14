@@ -13,10 +13,12 @@ from .constants import (
     DATA_CLIENT,
     DATA_COORDINATOR,
     DATA_ENTRIES,
+    DATA_HEATING,
     PARAM_POW,
 )
 from .coordinator import GreeVersatiCoordinator
 from .entity import GreeVersatiEntity
+from .heating.entities import heating_switches
 
 
 async def async_setup_entry(
@@ -35,6 +37,8 @@ async def async_setup_entry(
             )
         ]
     )
+    if (heating := runtime_data.get(DATA_HEATING)) is not None:
+        async_add_entities(heating_switches(heating, entry.data[CONF_DEVICE_ID]))
 
 
 class GreeVersatiPowerSwitch(GreeVersatiEntity, SwitchEntity):

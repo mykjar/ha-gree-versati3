@@ -40,7 +40,7 @@
       },
       "heating": {
         "title": "Floor heating control",
-        "description": "Adjusts the heating water setpoint from an outdoor-temperature curve, nudged by the indoor temperature. This version is advisory only: it shows the setpoint it would use but never changes the pump.",
+        "description": "Adjusts the heating water setpoint from an outdoor-temperature curve, nudged by the indoor temperature. It starts in advisory mode: it shows the setpoint it would use but only changes the pump once you turn on its \"Write to pump\" switch.",
         "data": {
           "heating_enabled": "Enable floor heating control",
           "heating_indoor_sensor": "Indoor temperature sensor",
@@ -85,11 +85,32 @@
       },
       "wat_box_tem_set": {
         "name": "Water box temperature setpoint"
+      },
+      "heating_curve_cold_outdoor": {
+        "name": "Curve cold point: outdoor"
+      },
+      "heating_curve_cold_flow": {
+        "name": "Curve cold point: water"
+      },
+      "heating_curve_mild_outdoor": {
+        "name": "Curve mild point: outdoor"
+      },
+      "heating_curve_mild_flow": {
+        "name": "Curve mild point: water"
+      },
+      "heating_kp": {
+        "name": "Room correction"
       }
     },
     "switch": {
       "power_control": {
         "name": "Power"
+      },
+      "heating_write": {
+        "name": "Write to pump"
+      },
+      "heating_learning": {
+        "name": "Learn curve offset"
       }
     },
     "select": {
@@ -173,7 +194,27 @@
     "button": {
       "heating_calibrate": {
         "name": "Calibrate curve to current setpoint"
+      },
+      "heating_reset_learning": {
+        "name": "Reset learned offset"
+      },
+      "heating_resume": {
+        "name": "Resume floor heating control"
       }
+    }
+  },
+  "exceptions": {
+    "calibration_needs_readings": {
+      "message": "Calibration needs the indoor and outdoor temperatures and the pump's current setpoint."
+    },
+    "curve_outdoor_order": {
+      "message": "The mild point must be warmer outside than the cold point."
+    },
+    "curve_flow_order": {
+      "message": "The mild point can't need warmer water than the cold point."
+    },
+    "flow_range": {
+      "message": "The highest setpoint must be at least 1 °C above the lowest."
     }
   }
 }

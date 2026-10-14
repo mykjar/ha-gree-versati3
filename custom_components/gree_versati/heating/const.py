@@ -78,6 +78,25 @@ def settings_from_options(options: Mapping[str, Any]) -> ControlSettings:
     )
 
 
+def options_with_defaults(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The options with every tuning value filled in."""
+    settings = settings_from_options(options)
+    curve = settings.curve
+    return {
+        **options,
+        CONF_CURVE_COLD_OUTDOOR: curve.cold_outdoor,
+        CONF_CURVE_COLD_FLOW: curve.cold_flow,
+        CONF_CURVE_MILD_OUTDOOR: curve.mild_outdoor,
+        CONF_CURVE_MILD_FLOW: curve.mild_flow,
+        CONF_MIN_FLOW: settings.min_flow,
+        CONF_MAX_FLOW: settings.max_flow,
+        CONF_KP: settings.kp,
+        CONF_KI: settings.ki,
+        CONF_OUTDOOR_SMOOTHING_HOURS: settings.outdoor_smoothing_hours,
+        CONF_MANUAL_PAUSE_HOURS: settings.manual_pause_hours,
+    }
+
+
 def storage_key(entry_id: str) -> str:
     """Where the controller keeps its state between restarts."""
     return f"gree_versati.heating.{entry_id}"

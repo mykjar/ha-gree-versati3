@@ -15,6 +15,7 @@ from .constants import (
     DATA_CLIENT,
     DATA_COORDINATOR,
     DATA_ENTRIES,
+    DATA_HEATING,
     HE_WAT_OUT_TEMP_SET_STEP,
     MAX_CO_WAT_OUT_TEMP_SET,
     MAX_HE_WAT_OUT_TEMP_SET,
@@ -29,6 +30,7 @@ from .constants import (
 )
 from .coordinator import GreeVersatiCoordinator
 from .entity import GreeVersatiEntity
+from .heating.entities import heating_numbers
 
 
 async def async_setup_entry(
@@ -57,6 +59,8 @@ async def async_setup_entry(
             ),
         ]
     )
+    if (heating := runtime_data.get(DATA_HEATING)) is not None:
+        async_add_entities(heating_numbers(heating, entry.data[CONF_DEVICE_ID]))
 
 
 class GreeVersatiSetpointNumber(GreeVersatiEntity, NumberEntity):

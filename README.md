@@ -37,6 +37,7 @@ This integration is inspired by protocol behavior observed in [`tomikaa87/gree-r
 - Services:
   - `gree_versati.set_param`
   - `gree_versati.get_params`
+- Optional [floor heating control](#floor-heating-control-optional): sets the heating water setpoint from your outdoor and indoor temperatures
 
 ## Install via HACS (Custom Repository)
 
@@ -56,14 +57,104 @@ This integration is inspired by protocol behavior observed in [`tomikaa87/gree-r
 - `key`: 16-byte AES key string
 - `timeout`: UDP timeout in seconds (default `5`)
 
-Options flow:
-- `scan_interval`: Polling interval in seconds (default `30`)
+Options (`Configure`):
+- Polling: `scan_interval`, polling interval in seconds (default `30`)
+- Floor heating control: see [below](#floor-heating-control-optional)
 
 ## Notes
 
 - The AES key must be exactly 16 bytes (UTF-8 byte length).
 - The integration does not log the key.
 - If a parameter is not returned by the device, corresponding entities are marked unavailable.
+
+## Floor heating control (optional)
+
+Sets the heating water setpoint (`HeWatOutTemSet`) for underfloor heating. It follows an outdoor-temperature curve, with a small correction from the indoor temperature. The aim is a steady room temperature at the lowest water temperature that holds it, which is also when a heat pump runs most efficiently.
+
+It is off by default. Once enabled it starts in **advisory mode**: it shows the setpoint it would use and changes nothing until you turn on **Write to pump**.
+
+### How it works
+
+```text
+water = curve(outdoor) + (1 + slope) × (room target − 21 °C)   two-point curve, flat beyond its points
+      + Kp × (room target − indoor)                            room correction, Kp 2.5 by default
+      + learned offset                                         slow, within ±3 °C, for a curve that is off
+```
+
+The result is kept within 20–30 °C by default and rounded to whole degrees. The setpoint changes by 1 °C at a time, at least 30 minutes apart, and only once the target has moved 0.75 °C. The defaults were tuned on a simulated house with a screed floor, a cold snap, sunny afternoons and noisy sensors. In that simulation the room stays within ±0.5 °C at least 95 % of the time, with at most 12 changes a day (`tests/test_heating_simulation.py`).
+
+### Before you start
+
+- The pump must control by water temperature, with its own weather curve (W-depend) off. If W-depend is on, the controller won't write and says why.
+- You need indoor and outdoor temperature sensors from any integration. Averages work best.
+
+### Setting it up
+
+1. `Settings` -> `Devices & Services` -> `Gree Versati 3 Local` -> `Configure` -> `Floor heating control`.
+2. Tick `Enable`, pick the indoor and outdoor sensors, and set `Highest water setpoint` to your floor's limit.
+3. Run it in advisory mode for a few days. While the house is comfortable on your usual setpoint, press **Calibrate curve to current setpoint** once. Then compare **Suggested water setpoint** with what you would choose.
+4. Turn on **Write to pump**.
+
+What it never does: change power, mode, hot water or cooling; write outside the configured range; or fight a setpoint changed on the pump or in an app. A manual change pauses it for 6 hours by default. If Home Assistant stops, the pump keeps its last setpoint.
+
+### Entities (on the pump's device)
+
+| Entity | Purpose |
+| --- | --- |
+| Floor heating (thermostat) | The room temperature to aim for. Off pauses control and leaves the pump as it is. |
+| Write to pump | Off: advisory only. On: the controller sets the pump's water setpoint. |
+| Suggested water setpoint | The whole-degree setpoint it would set now. |
+| Target water temperature, Curve water temperature | The calculation before rounding, and the curve's part of it. |
+| Learned curve offset | What learning currently adds to the curve. |
+| Floor heating status | See below. |
+| Curve cold point / mild point (outdoor, water), Room correction | Tuning, also available under `Configure`. |
+| Learn curve offset, Reset learned offset | Turn learning on or off, or forget what it learned. |
+| Calibrate curve to current setpoint | Shift the curve so it reproduces today's setpoint. |
+| Resume floor heating control | End a pause after a manual change. |
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| Active | In control; changes the setpoint when needed. |
+| Advisory only | Calculating; `Write to pump` is off. |
+| Waiting to change the setpoint | A change is due but waits for the 30-minute gap. |
+| Paused after a manual change | The setpoint was changed elsewhere; control waits. |
+| Paused | The thermostat is Off. |
+| Pump off, Pump not in a heating mode, Pump error, Pump unavailable | Nothing is written until the pump is heating normally again. |
+| Pump's own weather curve is on | W-depend is on, so the pump would ignore the setpoint. |
+| Sensor unavailable | The indoor or outdoor reading is missing, or has been silent for 12 hours. |
+| Setpoint change failed, Pump ignored the setpoint change | The last change didn't take; it is retried after 30 minutes. |
+
+### Tuning
+
+| If the room is… | Try |
+| --- | --- |
+| Too cold or too warm in all weather | Press `Calibrate`, or move both water points by the same amount. |
+| Fine when mild, too cold in frost | Raise the cold point's water temperature. |
+| Fine in frost, too warm when mild | Lower the mild point's water temperature. |
+| Overshooting after changes | Lower `Room correction`. |
+| Slow to recover after a cold spell | Raise `Room correction`. |
+
+If `Learned curve offset` sits near ±3 °C, the curve is off by about that much. Calibrating fixes the curve and clears the offset.
+
+### Dashboard
+
+A graph to watch it with, replacing `<device_id>` and the two sensors with your own:
+
+```yaml
+type: history-graph
+title: Floor heating
+hours_to_show: 72
+entities:
+  - entity: sensor.indoor_average
+  - entity: sensor.outdoor_average
+  - entity: sensor.gree_versati_<device_id>_target_water_temperature
+  - entity: sensor.gree_versati_<device_id>_suggested_water_setpoint
+  - entity: number.gree_versati_<device_id>_heating_water_outlet_setpoint
+  - entity: sensor.gree_versati_<device_id>_water_outlet_temperature
+  - entity: sensor.gree_versati_<device_id>_learned_curve_offset
+```
 
 ## Getting `device_id` and `key`
 

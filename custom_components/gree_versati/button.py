@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .constants import CONF_DEVICE_ID, DATA_ENTRIES, DATA_HEATING
-from .heating.entities import CalibrateCurveButton
+from .heating.entities import heating_buttons
 
 
 async def async_setup_entry(
@@ -18,4 +18,4 @@ async def async_setup_entry(
     """Set up floor heating buttons when control is enabled."""
     runtime_data = hass.data[entry.domain][DATA_ENTRIES][entry.entry_id]
     if (controller := runtime_data.get(DATA_HEATING)) is not None:
-        async_add_entities([CalibrateCurveButton(controller, entry.data[CONF_DEVICE_ID])])
+        async_add_entities(heating_buttons(controller, entry.data[CONF_DEVICE_ID]))
