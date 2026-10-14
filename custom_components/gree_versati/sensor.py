@@ -19,6 +19,7 @@ from .constants import (
     CONF_DEVICE_ID,
     DATA_COORDINATOR,
     DATA_ENTRIES,
+    DATA_HEATING,
     PARAM_ALL_ERR,
     PARAM_ALL_IN_WAT_TEM,
     PARAM_ALL_OUT_WAT_TEM,
@@ -35,6 +36,7 @@ from .constants import (
 )
 from .coordinator import GreeVersatiCoordinator
 from .entity import GreeVersatiEntity
+from .heating.entities import heating_sensors
 from .temperature import decode_measured_temperature
 
 
@@ -138,6 +140,8 @@ async def async_setup_entry(
         GreeVersatiTemperatureSensor(coordinator, device_id, description)
         for description in TEMPERATURE_SENSOR_DESCRIPTIONS
     )
+    if (heating := runtime_data.get(DATA_HEATING)) is not None:
+        async_add_entities(heating_sensors(heating, device_id))
 
 
 class GreeVersatiSensor(GreeVersatiEntity, SensorEntity):

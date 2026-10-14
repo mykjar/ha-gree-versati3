@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
@@ -29,6 +30,7 @@ class GreeVersatiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         hass: HomeAssistant,
         client: GreeVersatiProtocolClient,
         scan_interval_seconds: int,
+        extra_poll_groups: Sequence[tuple[str, ...]] = (),
     ) -> None:
         super().__init__(
             hass,
@@ -37,7 +39,10 @@ class GreeVersatiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=scan_interval_seconds),
         )
         self.client = client
-        self._measurements_retry_at = 0.0
+        # Each group is its own request, so keys one firmware doesn't report
+        # can't break the others.
+        self._optional_groups = (MEASUREMENT_POLL_KEYS, *extra_poll_groups)
+        self._retry_at = dict.fromkeys(self._optional_groups, 0.0)
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -45,26 +50,29 @@ class GreeVersatiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GreeVersatiClientError as err:
             raise UpdateFailed(str(err)) from err
 
-        data.update(await self._async_fetch_measurements())
+        for keys in self._optional_groups:
+            data.update(await self._async_fetch_optional(keys))
         return data
 
-    async def _async_fetch_measurements(self) -> dict[str, Any]:
-        """Fetch measured temperatures without ever failing the whole update.
+    async def _async_fetch_optional(self, keys: tuple[str, ...]) -> dict[str, Any]:
+        """Fetch values some firmware may not report, without failing the update.
 
         If the device does not answer this request (older firmware, unknown
-        keys), the measurement sensors become unavailable and the request is
-        retried after a back-off, so a slow failure cannot stall every poll.
+        keys), the entities using these values become unavailable and the
+        request is retried after a back-off, so a slow failure cannot stall
+        every poll.
         """
         now = time.monotonic()
-        if now < self._measurements_retry_at:
+        if now < self._retry_at[keys]:
             return {}
 
         try:
-            return await self.client.async_get(list(MEASUREMENT_POLL_KEYS))
+            return await self.client.async_get(list(keys))
         except GreeVersatiClientError as err:
-            self._measurements_retry_at = now + MEASUREMENT_RETRY_BACKOFF_SECONDS
+            self._retry_at[keys] = now + MEASUREMENT_RETRY_BACKOFF_SECONDS
             _LOGGER.debug(
-                "Measured temperatures not available, retrying in %s s: %s",
+                "Values %s not available, retrying in %s s: %s",
+                keys,
                 MEASUREMENT_RETRY_BACKOFF_SECONDS,
                 err,
             )
