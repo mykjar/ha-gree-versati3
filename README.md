@@ -1,5 +1,7 @@
 # Gree Versati 3 Local (Home Assistant)
 
+> **Fork notice:** This is a fork of [`sarunasr/ha-gree-versati3`](https://github.com/sarunasr/ha-gree-versati3). Changes made in this fork are developed using [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant.
+
 Custom Home Assistant integration for local LAN control of a Gree Versati 3 heat pump over the device UDP JSON protocol.
 
 This integration is inspired by protocol behavior observed in [`tomikaa87/gree-remote`](https://github.com/tomikaa87/gree-remote), but implemented from scratch in this repository without vendoring or subprocess calls.
