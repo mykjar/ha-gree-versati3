@@ -76,6 +76,21 @@
       },
       "pow": {
         "name": "Power"
+      },
+      "all_out_wat_tem": {
+        "name": "Water outlet temperature"
+      },
+      "all_in_wat_tem": {
+        "name": "Water inlet temperature"
+      },
+      "wat_box_tem": {
+        "name": "Water tank temperature"
+      },
+      "hep_out_wat_tem": {
+        "name": "Heat pump water outlet temperature"
+      },
+      "rmo_hom_tem": {
+        "name": "Remote room temperature"
       }
     }
   }

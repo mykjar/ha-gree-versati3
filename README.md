@@ -24,6 +24,14 @@ This integration is inspired by protocol behavior observed in [`tomikaa87/gree-r
   - `AllErr`
   - `Mod`
   - `Pow`
+- Measured temperature sensors (°C, decoded from `<name>Hi`/`<name>Lo` pairs as `(Hi - 100) + Lo * 0.1`):
+  - Water outlet temperature (`AllOutWatTem`)
+  - Water inlet temperature (`AllInWatTem`)
+  - Water tank temperature (`WatBoxTem`)
+  - Heat pump water outlet temperature (`HepOutWatTem`, disabled by default)
+  - Remote room temperature (`RmoHomTem`, disabled by default)
+
+  These are polled in a separate request, so a unit that does not report them keeps all other entities working. A sensor reporting -30.0 °C is treated as not fitted and shown as unavailable.
 - Services:
   - `gree_versati.set_param`
   - `gree_versati.get_params`
@@ -108,3 +116,10 @@ You are responsible for complying with local laws, device warranties, and networ
 ## Development
 
 Repository layout follows Home Assistant custom integration conventions with `custom_components/gree_versati`.
+
+Run the tests with:
+
+```bash
+pip install -r requirements_test.txt
+pytest
+```

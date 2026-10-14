@@ -48,6 +48,41 @@ POLL_KEYS: Final[tuple[str, ...]] = (
     PARAM_POW,
 )
 
+# Measured temperatures are reported as a pair of integer parameters:
+#   temperature_c = (<name>Hi - 100) + <name>Lo * 0.1
+# e.g. AllOutWatTemHi=132, AllOutWatTemLo=2 -> 32.2 °C.
+# A decoded value of -30.0 (Hi=70, Lo=0) means the sensor is not fitted.
+PARAM_ALL_IN_WAT_TEM: Final = "AllInWatTem"
+PARAM_ALL_OUT_WAT_TEM: Final = "AllOutWatTem"
+PARAM_HEP_OUT_WAT_TEM: Final = "HepOutWatTem"
+PARAM_WAT_BOX_TEM: Final = "WatBoxTem"
+PARAM_RMO_HOM_TEM: Final = "RmoHomTem"
+
+TEMP_HI_SUFFIX: Final = "Hi"
+TEMP_LO_SUFFIX: Final = "Lo"
+TEMP_HI_OFFSET: Final = 100
+TEMP_LO_SCALE: Final = 0.1
+TEMP_NOT_FITTED: Final = -30.0
+
+MEASURED_TEMPERATURE_PARAMS: Final[tuple[str, ...]] = (
+    PARAM_ALL_IN_WAT_TEM,
+    PARAM_ALL_OUT_WAT_TEM,
+    PARAM_HEP_OUT_WAT_TEM,
+    PARAM_WAT_BOX_TEM,
+    PARAM_RMO_HOM_TEM,
+)
+
+# Polled in a separate request so that firmware which does not report these
+# keys can never break polling of the setpoints, mode and power state.
+MEASUREMENT_POLL_KEYS: Final[tuple[str, ...]] = tuple(
+    f"{param}{suffix}"
+    for param in MEASURED_TEMPERATURE_PARAMS
+    for suffix in (TEMP_HI_SUFFIX, TEMP_LO_SUFFIX)
+)
+
+# After a failed measurement request, skip it for this long before retrying.
+MEASUREMENT_RETRY_BACKOFF_SECONDS: Final = 300
+
 SERVICE_SET_PARAM: Final = "set_param"
 SERVICE_GET_PARAMS: Final = "get_params"
 
