@@ -80,7 +80,15 @@ MEASUREMENT_POLL_KEYS: Final[tuple[str, ...]] = tuple(
     for suffix in (TEMP_HI_SUFFIX, TEMP_LO_SUFFIX)
 )
 
-# After a failed measurement request, skip it for this long before retrying.
+# Status flags read by floor heating control, polled only when it is enabled.
+# SvSt is the controller's "W-depend" (weather-dependent curve) switch; while
+# it is on the pump works out its own water setpoint.
+PARAM_SV_ST: Final = "SvSt"
+PARAM_SY_AN_FRO_RUN_STA: Final = "SyAnFroRunSta"
+STATUS_POLL_KEYS: Final[tuple[str, ...]] = (PARAM_SV_ST, PARAM_SY_AN_FRO_RUN_STA)
+
+# After a failed measurement or status request, skip it for this long before
+# retrying.
 MEASUREMENT_RETRY_BACKOFF_SECONDS: Final = 300
 
 SERVICE_SET_PARAM: Final = "set_param"
@@ -95,6 +103,7 @@ DEFAULT_MAX_DATAGRAM_BYTES: Final = 8192
 DATA_ENTRIES: Final = "entries"
 DATA_CLIENT: Final = "client"
 DATA_COORDINATOR: Final = "coordinator"
+DATA_HEATING: Final = "heating"
 
 MODE_OPTIONS: Final[dict[str, int]] = {
     "Heat": 1,
@@ -109,4 +118,6 @@ PLATFORMS: Final[list[Platform]] = [
     Platform.SENSOR,
     Platform.SWITCH,
     Platform.SELECT,
+    Platform.CLIMATE,
+    Platform.BUTTON,
 ]

@@ -17,6 +17,7 @@ from .constants import (
     DATA_CLIENT,
     DATA_COORDINATOR,
     DATA_ENTRIES,
+    DATA_HEATING,
     DEFAULT_RETRIES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -24,6 +25,7 @@ from .constants import (
     SERVICE_SET_PARAM,
 )
 from .coordinator import GreeVersatiCoordinator
+from .heating import async_remove_heating, async_setup_heating, heating_poll_groups
 from .services import async_register_services, async_unregister_services
 
 
@@ -52,13 +54,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: GreeVersatiConfigEntry) 
     )
 
     scan_interval = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
-    coordinator = GreeVersatiCoordinator(hass, client, scan_interval)
+    coordinator = GreeVersatiCoordinator(
+        hass, client, scan_interval, heating_poll_groups(entry.options)
+    )
 
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][DATA_ENTRIES][entry.entry_id] = {
         DATA_CLIENT: client,
         DATA_COORDINATOR: coordinator,
+        DATA_HEATING: await async_setup_heating(hass, entry, coordinator),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -84,4 +89,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: GreeVersatiConfigEntry)
 
 async def async_reload_entry(hass: HomeAssistant, entry: GreeVersatiConfigEntry) -> None:
     """Reload the config entry when options change."""
+    runtime_data = hass.data[DOMAIN][DATA_ENTRIES].get(entry.entry_id)
+    heating = runtime_data.get(DATA_HEATING) if runtime_data else None
+    if heating is not None and heating.apply_options(entry.options):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: GreeVersatiConfigEntry) -> None:
+    """Clean up when the device is removed."""
+    await async_remove_heating(hass, entry)

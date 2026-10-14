@@ -24,6 +24,7 @@ from .constants import (
     DOMAIN,
     PARAM_POW,
 )
+from .heating.options import heating_schema, validate_heating
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,9 +108,16 @@ class GreeVersatiOptionsFlow(config_entries.OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.FlowResult:
-        """Manage options."""
+        """Choose which options to change."""
+        return self.async_show_menu(step_id="init", menu_options=["polling", "heating"])
+
+    async def async_step_polling(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Manage polling."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self._async_save(user_input)
 
         schema = vol.Schema(
             {
@@ -123,4 +131,30 @@ class GreeVersatiOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="polling", data_schema=schema)
+
+    async def async_step_heating(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Manage floor heating control."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = validate_heating(user_input)
+            if not errors:
+                return self._async_save(user_input)
+
+        return self.async_show_form(
+            step_id="heating",
+            data_schema=heating_schema(
+                self._config_entry.options if user_input is None else user_input
+            ),
+            errors=errors,
+        )
+
+    @callback
+    def _async_save(self, user_input: dict[str, Any]) -> config_entries.FlowResult:
+        # Each step covers some of the options; keep the others.
+        return self.async_create_entry(
+            title="", data={**self._config_entry.options, **user_input}
+        )

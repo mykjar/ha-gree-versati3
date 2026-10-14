@@ -27,10 +27,52 @@
     "step": {
       "init": {
         "title": "Gree Versati options",
+        "menu_options": {
+          "polling": "Polling",
+          "heating": "Floor heating control"
+        }
+      },
+      "polling": {
+        "title": "Polling",
         "data": {
           "scan_interval": "Polling interval (seconds)"
         }
+      },
+      "heating": {
+        "title": "Floor heating control",
+        "description": "Adjusts the heating water setpoint from an outdoor-temperature curve, nudged by the indoor temperature. This version is advisory only: it shows the setpoint it would use but never changes the pump.",
+        "data": {
+          "heating_enabled": "Enable floor heating control",
+          "heating_indoor_sensor": "Indoor temperature sensor",
+          "heating_outdoor_sensor": "Outdoor temperature sensor",
+          "heating_curve_cold_outdoor": "Cold point: outdoor temperature",
+          "heating_curve_cold_flow": "Cold point: water temperature",
+          "heating_curve_mild_outdoor": "Mild point: outdoor temperature",
+          "heating_curve_mild_flow": "Mild point: water temperature",
+          "heating_min_flow": "Lowest water setpoint",
+          "heating_max_flow": "Highest water setpoint",
+          "heating_kp": "Room correction",
+          "heating_ki": "Learning rate",
+          "heating_outdoor_smoothing_hours": "Outdoor averaging",
+          "heating_manual_pause_hours": "Pause after a manual change"
+        },
+        "data_description": {
+          "heating_curve_cold_outdoor": "At or below this outdoor temperature the curve asks for the cold-point water temperature, for a 21 °C room.",
+          "heating_curve_mild_outdoor": "At or above this one it asks for the mild-point water temperature. In between it is a straight line.",
+          "heating_max_flow": "The setpoint is never set above this. For underfloor heating, keep it within your floor's limit.",
+          "heating_kp": "Degrees of water added per degree the room is below target.",
+          "heating_ki": "How fast a lasting room error is learned into the curve, per hour. 0 stops learning.",
+          "heating_outdoor_smoothing_hours": "Averages the outdoor temperature over this time. 0 turns averaging off.",
+          "heating_manual_pause_hours": "After the setpoint is changed on the pump or in an app, control waits this long."
+        }
       }
+    },
+    "error": {
+      "sensor_required": "Choose a sensor to enable control",
+      "same_sensor": "Indoor and outdoor need different sensors",
+      "curve_outdoor_order": "The mild point must be warmer outside than the cold point",
+      "curve_flow_order": "The mild point can't need warmer water than the cold point",
+      "flow_range": "The highest setpoint must be at least 1 °C above the lowest"
     }
   },
   "entity": {
@@ -91,6 +133,46 @@
       },
       "rmo_hom_tem": {
         "name": "Remote room temperature"
+      },
+      "heating_curve_water_temperature": {
+        "name": "Curve water temperature"
+      },
+      "heating_target_water_temperature": {
+        "name": "Target water temperature"
+      },
+      "heating_suggested_setpoint": {
+        "name": "Suggested water setpoint"
+      },
+      "heating_learned_offset": {
+        "name": "Learned curve offset"
+      },
+      "heating_status": {
+        "name": "Floor heating status",
+        "state": {
+          "active": "Active",
+          "advisory": "Advisory only",
+          "paused": "Paused",
+          "manual_override": "Paused after a manual change",
+          "rate_limited": "Waiting to change the setpoint",
+          "sensor_unavailable": "Sensor unavailable",
+          "pump_unavailable": "Pump unavailable",
+          "pump_off": "Pump off",
+          "not_heating": "Pump not in a heating mode",
+          "pump_error": "Pump error",
+          "w_depend_on": "Pump's own weather curve is on",
+          "write_failed": "Setpoint change failed",
+          "write_ignored": "Pump ignored the setpoint change"
+        }
+      }
+    },
+    "climate": {
+      "floor_heating": {
+        "name": "Floor heating"
+      }
+    },
+    "button": {
+      "heating_calibrate": {
+        "name": "Calibrate curve to current setpoint"
       }
     }
   }
