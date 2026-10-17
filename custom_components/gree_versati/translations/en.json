@@ -116,6 +116,13 @@
     "select": {
       "mode_control": {
         "name": "Mode"
+      },
+      "heat_hot_water_priority": {
+        "name": "Heat + hot water priority",
+        "state": {
+          "heating": "Heating",
+          "hot_water": "Hot water"
+        }
       }
     },
     "sensor": {

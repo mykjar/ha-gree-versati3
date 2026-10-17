@@ -80,6 +80,14 @@ MEASUREMENT_POLL_KEYS: Final[tuple[str, ...]] = tuple(
     for suffix in (TEMP_HI_SUFFIX, TEMP_LO_SUFFIX)
 )
 
+# Which goes first in "Heat + hot water" mode: the floor or the hot water tank.
+# The Gree app calls this "Priority selection".
+PARAM_HET_HT_WTER: Final = "HetHtWter"
+HEAT_HOT_WATER_PRIORITY_OPTIONS: Final[dict[str, int]] = {"heating": 0, "hot_water": 1}
+
+# Settings some firmware may not report, polled in their own request.
+SETTING_POLL_KEYS: Final[tuple[str, ...]] = (PARAM_HET_HT_WTER,)
+
 # Status flags read by floor heating control, polled only when it is enabled.
 # SvSt is the controller's "W-depend" (weather-dependent curve) switch; while
 # it is on the pump works out its own water setpoint.

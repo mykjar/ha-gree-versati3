@@ -15,12 +15,14 @@ from custom_components.gree_versati.constants import (
     MEASUREMENT_POLL_KEYS,
     MEASUREMENT_RETRY_BACKOFF_SECONDS,
     POLL_KEYS,
+    SETTING_POLL_KEYS,
     STATUS_POLL_KEYS,
 )
 from custom_components.gree_versati.coordinator import GreeVersatiCoordinator
 
 MAIN_VALUES = {"HeWatOutTemSet": 35, "Pow": 1, "Mod": 1, "AllErr": 0}
 MEASUREMENT_VALUES = {"AllOutWatTemHi": 132, "AllOutWatTemLo": 2}
+SETTING_VALUES = {"HetHtWter": 1}
 STATUS_VALUES = {"SvSt": 0, "SyAnFroRunSta": 0}
 
 
@@ -29,6 +31,7 @@ class FakeClient:
 
     def __init__(self, *, measurements: dict[str, Any] | Exception) -> None:
         self.measurements = measurements
+        self.settings: dict[str, Any] | Exception = SETTING_VALUES
         self.status: dict[str, Any] | Exception = STATUS_VALUES
         self.main: dict[str, Any] | Exception = MAIN_VALUES
         self.calls: list[list[str]] = []
@@ -37,6 +40,8 @@ class FakeClient:
         self.calls.append(keys)
         if keys == list(MEASUREMENT_POLL_KEYS):
             result = self.measurements
+        elif keys == list(SETTING_POLL_KEYS):
+            result = self.settings
         elif keys == list(STATUS_POLL_KEYS):
             result = self.status
         else:
@@ -56,8 +61,12 @@ async def test_update_merges_measurements(hass: HomeAssistant) -> None:
 
     data = await coordinator._async_update_data()
 
-    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES}
-    assert client.calls == [list(POLL_KEYS), list(MEASUREMENT_POLL_KEYS)]
+    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES, **SETTING_VALUES}
+    assert client.calls == [
+        list(POLL_KEYS),
+        list(MEASUREMENT_POLL_KEYS),
+        list(SETTING_POLL_KEYS),
+    ]
 
 
 async def test_measurement_failure_does_not_fail_update(hass: HomeAssistant) -> None:
@@ -66,7 +75,7 @@ async def test_measurement_failure_does_not_fail_update(hass: HomeAssistant) -> 
 
     data = await coordinator._async_update_data()
 
-    assert data == MAIN_VALUES
+    assert data == {**MAIN_VALUES, **SETTING_VALUES}
 
 
 async def test_measurement_failure_backs_off(hass: HomeAssistant) -> None:
@@ -103,10 +112,11 @@ async def test_status_flags_are_polled_only_when_asked_for(hass: HomeAssistant) 
 
     data = await coordinator._async_update_data()
 
-    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES, **STATUS_VALUES}
+    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES, **SETTING_VALUES, **STATUS_VALUES}
     assert client.calls == [
         list(POLL_KEYS),
         list(MEASUREMENT_POLL_KEYS),
+        list(SETTING_POLL_KEYS),
         list(STATUS_POLL_KEYS),
     ]
 
@@ -120,6 +130,16 @@ async def test_unsupported_status_flags_keep_measurements(hass: HomeAssistant) -
     data = await coordinator._async_update_data()
 
     # The status request backs off on its own; measurements carry on.
-    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES}
+    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES, **SETTING_VALUES}
     assert client.calls.count(list(STATUS_POLL_KEYS)) == 1
     assert _measurement_calls(client) == 2
+
+
+async def test_unsupported_priority_keeps_measurements(hass: HomeAssistant) -> None:
+    client = FakeClient(measurements=MEASUREMENT_VALUES)
+    client.settings = GreeVersatiClientError("no values")
+    coordinator = GreeVersatiCoordinator(hass, client, 30)
+
+    data = await coordinator._async_update_data()
+
+    assert data == {**MAIN_VALUES, **MEASUREMENT_VALUES}
