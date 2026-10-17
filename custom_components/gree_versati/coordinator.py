@@ -17,6 +17,7 @@ from .constants import (
     MEASUREMENT_POLL_KEYS,
     MEASUREMENT_RETRY_BACKOFF_SECONDS,
     POLL_KEYS,
+    SETTING_POLL_KEYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class GreeVersatiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client = client
         # Each group is its own request, so keys one firmware doesn't report
         # can't break the others.
-        self._optional_groups = (MEASUREMENT_POLL_KEYS, *extra_poll_groups)
+        self._optional_groups = (MEASUREMENT_POLL_KEYS, SETTING_POLL_KEYS, *extra_poll_groups)
         self._retry_at = dict.fromkeys(self._optional_groups, 0.0)
 
     async def _async_update_data(self) -> dict[str, Any]:

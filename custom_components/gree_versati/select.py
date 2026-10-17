@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -14,7 +15,9 @@ from .constants import (
     DATA_CLIENT,
     DATA_COORDINATOR,
     DATA_ENTRIES,
+    HEAT_HOT_WATER_PRIORITY_OPTIONS,
     MODE_OPTIONS,
+    PARAM_HET_HT_WTER,
     PARAM_MOD,
     PARAM_POW,
 )
@@ -23,6 +26,7 @@ from .entity import GreeVersatiEntity
 
 _MODE_BY_LABEL = MODE_OPTIONS
 _LABEL_BY_MODE = {value: key for key, value in MODE_OPTIONS.items()}
+_PRIORITY_BY_VALUE = {value: key for key, value in HEAT_HOT_WATER_PRIORITY_OPTIONS.items()}
 
 
 async def async_setup_entry(
@@ -38,7 +42,12 @@ async def async_setup_entry(
                 runtime_data[DATA_COORDINATOR],
                 entry.data[CONF_DEVICE_ID],
                 runtime_data[DATA_CLIENT],
-            )
+            ),
+            GreeVersatiHeatHotWaterPrioritySelect(
+                runtime_data[DATA_COORDINATOR],
+                entry.data[CONF_DEVICE_ID],
+                runtime_data[DATA_CLIENT],
+            ),
         ]
     )
 
@@ -90,4 +99,42 @@ class GreeVersatiModeSelect(GreeVersatiEntity, SelectEntity):
             raise HomeAssistantError("Turn off the unit before changing mode")
 
         await self._client.async_set({PARAM_MOD: _MODE_BY_LABEL[option]})
+        await self.coordinator.async_request_refresh()
+
+
+class GreeVersatiHeatHotWaterPrioritySelect(GreeVersatiEntity, SelectEntity):
+    """Whether the floor or the hot water tank goes first in Heat + hot water mode."""
+
+    _attr_translation_key = "heat_hot_water_priority"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = list(HEAT_HOT_WATER_PRIORITY_OPTIONS)
+
+    def __init__(
+        self,
+        coordinator: GreeVersatiCoordinator,
+        device_id: str,
+        client: GreeVersatiProtocolClient,
+    ) -> None:
+        super().__init__(coordinator, device_id, PARAM_HET_HT_WTER)
+        self._client = client
+
+    @property
+    def available(self) -> bool:
+        """Unavailable when the unit doesn't report a known priority."""
+        return super().available and self.current_option is not None
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the current priority."""
+        raw_value = (self.coordinator.data or {}).get(PARAM_HET_HT_WTER)
+        try:
+            return _PRIORITY_BY_VALUE.get(int(raw_value))
+        except (TypeError, ValueError):
+            return None
+
+    async def async_select_option(self, option: str) -> None:
+        """Change the priority."""
+        await self._client.async_set(
+            {PARAM_HET_HT_WTER: HEAT_HOT_WATER_PRIORITY_OPTIONS[option]}
+        )
         await self.coordinator.async_request_refresh()
