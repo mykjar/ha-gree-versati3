@@ -24,6 +24,7 @@ Updates come as [GitHub releases](https://github.com/mykjar/ha-gree-versati3/rel
 | [v0.3.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.3.0) | Floor heating control, advisory only |
 | [v0.4.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.4.0) | Floor heating control can set the pump; tuning from a dashboard |
 | [v0.5.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.5.0) | Floor heating dashboard card |
+| [v0.6.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.6.0) | Heat + hot water priority |
 
 `Configure` on the integration now opens a menu: `Polling` holds the original polling interval, and `Floor heating control` holds the new settings.
 
@@ -38,6 +39,10 @@ Sensors in °C, decoded from `<name>Hi`/`<name>Lo` pairs as `(Hi - 100) + Lo * 0
 - Remote room temperature (`RmoHomTem`, disabled by default)
 
 They are polled in a separate request, so a unit that does not report them keeps all other entities working. A sensor reporting -30.0 °C is treated as not fitted and shown as unavailable.
+
+### Heat + hot water priority
+
+**Heat + hot water priority**, under Configuration on the pump's device, chooses what goes first in Heat + hot water mode: **Heating** (the floor) or **Hot water** (the tank). It is the Gree app's **Priority selection** (parameter `HetHtWter`: 0 = Heating, 1 = Hot water), so a change in either place shows in both.
 
 ### Floor heating control (optional)
 
