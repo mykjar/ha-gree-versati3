@@ -25,6 +25,7 @@ Updates come as [GitHub releases](https://github.com/mykjar/ha-gree-versati3/rel
 | [v0.4.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.4.0) | Floor heating control can set the pump; tuning from a dashboard |
 | [v0.5.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.5.0) | Floor heating dashboard card |
 | [v0.6.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.6.0) | Heat + hot water priority |
+| [v0.7.0](https://github.com/mykjar/ha-gree-versati3/releases/tag/v0.7.0) | Floor heating control uses the weather forecast |
 
 `Configure` on the integration now opens a menu: `Polling` holds the original polling interval, and `Floor heating control` holds the new settings.
 
@@ -64,15 +65,27 @@ The result is kept within 20–30 °C by default and rounded to whole degrees. T
 
 - The pump must control by water temperature, with its own weather curve (W-depend) off. If W-depend is on, the controller won't write and says why.
 - You need indoor and outdoor temperature sensors from any integration. Averages work best.
+- Optional: a weather entity with an hourly forecast. Home Assistant's built-in `weather.forecast_home` (Met.no) works.
 
 #### Setting it up
 
 1. `Settings` -> `Devices & Services` -> `Gree Versati 3 Local` -> `Configure` -> `Floor heating control`.
-2. Tick `Enable`, pick the indoor and outdoor sensors, and set `Highest water setpoint` to your floor's limit.
+2. Tick `Enable`, pick the indoor and outdoor sensors, and set `Highest water setpoint` to your floor's limit. Leave `Weather forecast` on `weather.forecast_home` (suggested when it exists) to use the forecast.
 3. Run it in advisory mode for a few days. While the house is comfortable on your usual setpoint, press **Calibrate curve to current setpoint** once. Then compare **Suggested water setpoint** with what you would choose.
 4. Turn on **Write to pump**.
 
 What it never does: change power, mode, hot water or cooling; write outside the configured range; or fight a setpoint changed on the pump or in an app. A manual change pauses it for 6 hours by default. If Home Assistant stops, the pump keeps its last setpoint.
+
+#### Weather forecast
+
+A concrete floor reacts hours late, so with a weather forecast chosen the controller looks ahead in two ways:
+
+- **Look-ahead:** the curve uses the average of the outdoor temperature now and the forecast for each half hour of the next 4 hours.
+- **Sun cut:** when the forecast shows sun 2–6 hours ahead, the water is lowered by up to 2 °C, so the floor isn't full of heat when the sun arrives. It uses the sun's real position at your home.
+
+The forecast is fetched every 30 minutes. Without a usable forecast the controller works exactly as it would without one, and says so once in the log. `Look ahead` and `Sun cut` under `Configure` tune both; 0 turns each off.
+
+In the simulated house, with forecasts that are wrong in realistic ways, the room stayed within ±0.5 °C noticeably more often: about 83 % → 93 % on sunny autumn days, with 70 % less overheating, and 95 % → 99 % in a winter fortnight. That held even when 30 % of days were forecast wrong. No run was colder, and energy use was the same: this is about comfort, not savings.
 
 #### Entities (on the pump's device)
 
@@ -83,7 +96,8 @@ What it never does: change power, mode, hot water or cooling; write outside the 
 | Suggested water setpoint | The whole-degree setpoint it would set now. |
 | Target water temperature, Curve water temperature | The calculation before rounding, and the curve's part of it. |
 | Learned curve offset | What learning currently adds to the curve. |
-| Smoothed outdoor temperature | The outdoor temperature the curve uses, after averaging. |
+| Smoothed outdoor temperature | The outdoor temperature the curve uses, after averaging (and looking ahead, with a forecast). |
+| Forecast outdoor temperature, Sun cut | What the forecast contributes: the look-ahead average, and how far the water is lowered for sun. |
 | Floor heating status | See below. |
 | Curve cold point / mild point (outdoor, water), Room correction | Tuning, also available under `Configure`. |
 | Learn curve offset, Reset learned offset | Turn learning on or off, or forget what it learned. |
@@ -126,9 +140,10 @@ entity: climate.gree_versati_<device_id>_floor_heating
 hours_to_show: 72  # optional
 ```
 
-It shows two graphs:
+It shows up to three graphs:
 - **Floor heating water:** the controller's target and the curve on its own, against the pump's setpoint and the measured water. In advisory mode this is where you see what it would do.
-- **Room and outdoor:** the room against its target, with heating periods shaded, and the smoothed outdoor temperature.
+- **Room and outdoor:** the room against its target, with heating periods shaded, the outdoor temperature the curve uses and, with a forecast, the outdoor temperature over the next hours.
+- **Adjustments:** the sun cut and the learned offset, in °C.
 
 ### Development and tests
 
