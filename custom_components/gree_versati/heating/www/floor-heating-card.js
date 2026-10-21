@@ -26,7 +26,15 @@ const WATER_LINES = [
   ["number", "he_wat_out_tem_set", "Pump setpoint"],
   ["sensor", "all_out_wat_tem", "Water out (measured)"],
 ];
-const OUTDOOR_LINE = ["sensor", "heating_outdoor_temperature", "Outdoor (smoothed)"];
+const OUTDOOR_LINES = [
+  ["sensor", "heating_outdoor_temperature", "Outdoor used by the curve"],
+  ["sensor", "heating_forecast_outdoor_temperature", "Outdoor, next hours (forecast)"],
+];
+// Corrections to the curve, in °C: on their own graph, as they sit near zero.
+const ADJUSTMENT_LINES = [
+  ["sensor", "heating_sun_cut", "Sun cut"],
+  ["sensor", "heating_learned_offset", "Learned offset"],
+];
 
 const LABELS = {
   entity: "Floor heating thermostat",
@@ -52,6 +60,8 @@ function stackConfig(entities, config) {
     return null;
   }
   const deviceId = thermostat.device_id;
+  const lines = (list) => list.flatMap((line) => deviceLine(entities, deviceId, line));
+  const adjustments = lines(ADJUSTMENT_LINES);
   return {
     type: "vertical-stack",
     cards: [
@@ -59,17 +69,24 @@ function stackConfig(entities, config) {
         type: "history-graph",
         title: config.title ?? "Floor heating water",
         hours_to_show: config.hours_to_show,
-        entities: WATER_LINES.flatMap((line) => deviceLine(entities, deviceId, line)),
+        entities: lines(WATER_LINES),
       },
       {
         type: "history-graph",
         title: "Room and outdoor",
         hours_to_show: config.hours_to_show,
-        entities: [
-          { entity: config.entity, name: "Room" },
-          ...deviceLine(entities, deviceId, OUTDOOR_LINE),
-        ],
+        entities: [{ entity: config.entity, name: "Room" }, ...lines(OUTDOOR_LINES)],
       },
+      ...(adjustments.length
+        ? [
+            {
+              type: "history-graph",
+              title: "Adjustments",
+              hours_to_show: config.hours_to_show,
+              entities: adjustments,
+            },
+          ]
+        : []),
     ],
   };
 }

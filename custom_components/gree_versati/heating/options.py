@@ -20,13 +20,19 @@ from .const import (
     CONF_INDOOR_SENSOR,
     CONF_KI,
     CONF_KP,
+    CONF_LOOKAHEAD_HOURS,
     CONF_MANUAL_PAUSE_HOURS,
     CONF_MAX_FLOW,
     CONF_MIN_FLOW,
     CONF_OUTDOOR_SENSOR,
     CONF_OUTDOOR_SMOOTHING_HOURS,
+    CONF_SUN_CUT_MAX,
+    CONF_WEATHER_ENTITY,
     settings_from_options,
 )
+
+# Entity fields the form may leave empty; empty is saved as "", meaning none.
+OPTIONAL_ENTITIES = (CONF_INDOOR_SENSOR, CONF_OUTDOOR_SENSOR, CONF_WEATHER_ENTITY)
 
 
 def _number(
@@ -40,7 +46,9 @@ def _number(
     return selector.NumberSelector(config)
 
 
-def heating_schema(options: Mapping[str, Any]) -> vol.Schema:
+def heating_schema(
+    options: Mapping[str, Any], weather_suggestion: str | None = None
+) -> vol.Schema:
     """Form fields, pre-filled from the current options or the defaults."""
     settings = settings_from_options(options)
     curve = settings.curve
@@ -87,6 +95,18 @@ def heating_schema(options: Mapping[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_MANUAL_PAUSE_HOURS, default=settings.manual_pause_hours
             ): _number(0, 48, 0.5, UnitOfTime.HOURS),
+            vol.Optional(
+                CONF_WEATHER_ENTITY,
+                description={
+                    "suggested_value": options.get(CONF_WEATHER_ENTITY, weather_suggestion)
+                },
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="weather")),
+            vol.Required(CONF_LOOKAHEAD_HOURS, default=settings.lookahead_hours): _number(
+                0, 12, 0.5, UnitOfTime.HOURS
+            ),
+            vol.Required(CONF_SUN_CUT_MAX, default=settings.sun_cut_max): _number(
+                0, 5, 0.5, celsius
+            ),
         }
     )
 

@@ -71,6 +71,9 @@ ENTITIES = {
         entry("number.setpoint", "he_wat_out_tem_set"),
         entry("sensor.water_out", "all_out_wat_tem"),
         entry("sensor.outdoor", "heating_outdoor_temperature"),
+        entry("sensor.outdoor_ahead", "heating_forecast_outdoor_temperature"),
+        entry("sensor.sun_cut", "heating_sun_cut"),
+        entry("sensor.learned", "heating_learned_offset"),
         # Same key on another device or from another integration: not ours.
         entry("sensor.other_pump_target", "heating_target_water_temperature", device_id="other"),
         entry("sensor.lookalike", "heating_curve_water_temperature", platform="other"),
@@ -109,7 +112,7 @@ def test_shows_the_controllers_water_and_room(js: Any) -> None:
         """,
     )
 
-    water, room = result["config"]["cards"]
+    water, room, adjustments = result["config"]["cards"]
     assert result["config"]["type"] == "vertical-stack"
     assert water == {
         "type": "history-graph",
@@ -124,9 +127,37 @@ def test_shows_the_controllers_water_and_room(js: Any) -> None:
     }
     assert room["entities"] == [
         {"entity": "climate.floor", "name": "Room"},
-        {"entity": "sensor.outdoor", "name": "Outdoor (smoothed)"},
+        {"entity": "sensor.outdoor", "name": "Outdoor used by the curve"},
+        {"entity": "sensor.outdoor_ahead", "name": "Outdoor, next hours (forecast)"},
     ]
+    assert adjustments == {
+        "type": "history-graph",
+        "title": "Adjustments",
+        "hours_to_show": 72,
+        "entities": [
+            {"entity": "sensor.sun_cut", "name": "Sun cut"},
+            {"entity": "sensor.learned", "name": "Learned offset"},
+        ],
+    }
     assert result["hassPassed"] is True
+
+
+def test_adjustments_graph_only_when_there_is_something_to_show(js: Any) -> None:
+    result = run(
+        js,
+        """
+        const card = Card();
+        card.setConfig({ entity: "climate.floor" });
+        const entities = { ...ENTITIES };
+        delete entities["sensor.sun_cut"];
+        delete entities["sensor.learned"];
+        card.hass = { entities };
+        await settle();
+        result = created[0].config.cards.map((graph) => graph.title);
+        """,
+    )
+
+    assert result == ["Floor heating water", "Room and outdoor"]
 
 
 def test_options_are_passed_on(js: Any) -> None:
@@ -141,7 +172,7 @@ def test_options_are_passed_on(js: Any) -> None:
         """,
     )
 
-    assert result == [["Floor", 24], ["Room and outdoor", 24]]
+    assert result == [["Floor", 24], ["Room and outdoor", 24], ["Adjustments", 24]]
 
 
 def test_rebuilds_only_when_its_entities_change(js: Any) -> None:
@@ -174,7 +205,7 @@ def test_rebuilds_only_when_its_entities_change(js: Any) -> None:
         "afterStateUpdates": 1,
         "latestHassPassed": True,
         "rebuilt": 2,
-        "roomLines": 1,
+        "roomLines": 2,
     }
 
 

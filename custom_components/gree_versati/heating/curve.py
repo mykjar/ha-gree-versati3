@@ -80,6 +80,10 @@ class ControlSettings:
     settle_hours: float = 6.0
     write_confirm_seconds: float = 180.0
     max_learning_seconds: float = 900.0
+    # Forecast use (forecast.py); the integration applies them through Inputs.
+    lookahead_hours: float = 4.0
+    sun_cut_max: float = 2.0
+    sun_window_hours: tuple[float, float] = (2.0, 6.0)
 
 
 @dataclass(kw_only=True)
@@ -120,6 +124,9 @@ class Inputs:
     ``hold`` is a pump-side reason not to write, decided by the integration.
     ``space_heating`` is False while the pump is busy with something else
     (defrost, a hot-water cycle), when room readings say little about the curve.
+    ``outdoor_ahead`` is the outdoor temperature looking ahead with the forecast,
+    used by the curve instead of the reading. ``sun_cut`` lowers the curve
+    ahead of forecast sun.
     """
 
     now: float
@@ -128,6 +135,8 @@ class Inputs:
     setpoint: int | None
     hold: Status | None = None
     space_heating: bool = True
+    outdoor_ahead: float | None = None
+    sun_cut: float = 0.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -142,6 +151,8 @@ class Decision:
     target_flow: float | None
     suggested_setpoint: int | None
     write: int | None
+    sun_cut: float = 0.0
+    outdoor_ahead: float | None = None
 
 
 def round_half_up(value: float) -> int:
@@ -265,9 +276,10 @@ class HeatingCore:
 
         outdoor: float | None = None
         if inputs.outdoor is not None:
+            reading = inputs.outdoor if inputs.outdoor_ahead is None else inputs.outdoor_ahead
             state.smoothed_outdoor = smooth(
                 state.smoothed_outdoor,
-                inputs.outdoor,
+                reading,
                 elapsed,
                 settings.outdoor_smoothing_hours,
             )
@@ -278,14 +290,15 @@ class HeatingCore:
         target: float | None = None
         if outdoor is not None and inputs.indoor is not None:
             curve_flow = settings.curve.flow(outdoor, state.room_target)
+            lowered = curve_flow - inputs.sun_cut
             error = state.room_target - inputs.indoor
-            if self._learning_allowed(inputs, now, curve_flow, error):
+            if self._learning_allowed(inputs, now, lowered, error):
                 hours = min(elapsed, settings.max_learning_seconds) / 3600
                 state.learned = _clamp(
                     state.learned + settings.ki * error * hours, settings.learned_limit
                 )
             correction = _clamp(settings.kp * error + state.learned, settings.correction_limit)
-            target = min(max(curve_flow + correction, settings.min_flow), settings.max_flow)
+            target = min(max(lowered + correction, settings.min_flow), settings.max_flow)
 
         suggested: int | None = None
         if target is not None and inputs.setpoint is not None:
@@ -302,6 +315,8 @@ class HeatingCore:
             target_flow=target,
             suggested_setpoint=suggested,
             write=write,
+            sun_cut=inputs.sun_cut,
+            outdoor_ahead=inputs.outdoor_ahead,
         )
 
     def _track_setpoint(self, observed: int | None, now: float) -> None:

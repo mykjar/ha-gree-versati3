@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -37,7 +37,7 @@ from homeassistant.const import (
     STATE_ON,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -69,6 +69,7 @@ from custom_components.gree_versati.heating.const import (
     CONF_MIN_FLOW,
     CONF_OUTDOOR_SENSOR,
     CONF_OUTDOOR_SMOOTHING_HOURS,
+    CONF_WEATHER_ENTITY,
 )
 from custom_components.gree_versati.heating.controller import HeatingController
 
@@ -690,3 +691,113 @@ async def test_smoothed_outdoor_temperature_sensor(hass: HomeAssistant, pump: Fa
     await setup(hass, outdoor="-3.5")
 
     assert float(state(hass, "sensor", "heating_outdoor_temperature").state) == -3.5
+
+
+# Weather forecast
+
+WEATHER = "weather.forecast_home"
+# Clear-sky midday falls 2-6 h after this in the test location (San Diego).
+MORNING = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
+
+
+def provide_forecast(
+    hass: HomeAssistant, *, temperature: float, cloud: float, unit: str = "°C"
+) -> None:
+    """A weather entity whose hourly forecast stays the same for 12 hours."""
+    hass.states.async_set(WEATHER, "sunny", {"temperature_unit": unit})
+    items = [
+        {
+            "datetime": (MORNING + timedelta(hours=hour)).isoformat(),
+            "temperature": temperature,
+            "cloud_coverage": cloud,
+        }
+        for hour in range(13)
+    ]
+
+    async def get_forecasts(call: ServiceCall) -> ServiceResponse:
+        return {WEATHER: {"forecast": items}}
+
+    hass.services.async_register(
+        "weather", "get_forecasts", get_forecasts, supports_response=SupportsResponse.ONLY
+    )
+
+
+FORECAST_OPTIONS = {**HEATING_OPTIONS, CONF_WEATHER_ENTITY: WEATHER}
+
+
+@pytest.mark.parametrize(("unit", "temperature"), [("°C", 4.0), ("°F", 39.2)])
+async def test_forecast_looks_ahead_and_cuts_for_sun(
+    hass: HomeAssistant,
+    pump: FakePump,
+    freezer: FrozenDateTimeFactory,
+    unit: str,
+    temperature: float,
+) -> None:
+    freezer.move_to(MORNING)
+    provide_forecast(hass, temperature=temperature, cloud=0, unit=unit)
+
+    entry = await setup(hass, FORECAST_OPTIONS)
+
+    # Now 0 °C, then 4 °C for every half hour of the next 4 hours.
+    ahead = float(state(hass, "sensor", "heating_forecast_outdoor_temperature").state)
+    assert ahead == pytest.approx(32 / 9, abs=0.01)
+    decision = controller(hass, entry).data
+    assert decision.outdoor == pytest.approx(32 / 9, abs=0.01)
+    assert 1.8 <= decision.sun_cut <= 2.0
+    assert float(state(hass, "sensor", "heating_sun_cut").state) == pytest.approx(
+        decision.sun_cut
+    )
+    assert decision.target_flow == pytest.approx(
+        decision.curve_flow - decision.sun_cut + decision.correction
+    )
+
+
+async def test_cloudy_forecast_cuts_nothing(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(MORNING)
+    provide_forecast(hass, temperature=4.0, cloud=100)
+
+    entry = await setup(hass, FORECAST_OPTIONS)
+
+    assert controller(hass, entry).data.sun_cut == 0
+    assert controller(hass, entry).data.outdoor_ahead == pytest.approx(32 / 9, abs=0.01)
+
+
+async def test_without_a_forecast_control_carries_on(
+    hass: HomeAssistant, pump: FakePump, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = await setup(hass, FORECAST_OPTIONS)
+    await poll(hass, entry)
+
+    decision = controller(hass, entry).data
+    assert decision.outdoor_ahead is None
+    assert decision.sun_cut == 0
+    assert decision.target_flow == pytest.approx(26.68, abs=0.01)
+    assert state(hass, "sensor", "heating_status").state == "advisory"
+    assert state(hass, "sensor", "heating_forecast_outdoor_temperature").state == "unknown"
+    assert caplog.text.count("No hourly forecast from weather.forecast_home") == 1
+
+
+async def test_settings_offer_the_default_forecast(hass: HomeAssistant, pump: FakePump) -> None:
+    hass.states.async_set(WEATHER, "sunny", {"temperature_unit": "°C"})
+    entry = await setup(hass, options={})
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "heating"}
+    )
+
+    field = next(key for key in result["data_schema"].schema if key == CONF_WEATHER_ENTITY)
+    assert field.description == {"suggested_value": WEATHER}
+
+
+async def test_clearing_the_forecast_turns_it_off(hass: HomeAssistant, pump: FakePump) -> None:
+    entry = await setup(hass, FORECAST_OPTIONS)
+    flow_id = await _open_options(hass, entry, "heating")
+
+    await hass.config_entries.options.async_configure(flow_id, _heating_form())
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_WEATHER_ENTITY] == ""
+    assert controller(hass, entry).weather_entity_id is None
