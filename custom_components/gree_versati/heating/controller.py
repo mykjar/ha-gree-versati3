@@ -6,6 +6,7 @@ import logging
 import math
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -45,6 +46,9 @@ from .const import (
     CONF_CURVE_MILD_FLOW,
     CONF_INDOOR_SENSOR,
     CONF_OUTDOOR_SENSOR,
+    CONF_WEATHER_ENTITY,
+    FORECAST_MAX_AGE,
+    FORECAST_REFRESH,
     LIVE_OPTIONS,
     STALE_AFTER,
     STORAGE_VERSION,
@@ -54,6 +58,15 @@ from .const import (
     storage_key,
 )
 from .curve import ControlState, Decision, HeatingCore, Inputs, Status, calibrated_curve
+from .forecast import (
+    HourlyForecast,
+    clear_sky,
+    cloud_at,
+    lookahead_outdoor,
+    parse_hour,
+    sun_score,
+    window_times,
+)
 from .options import validate_heating
 
 _LOGGER = logging.getLogger(__name__)
@@ -68,6 +81,11 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _same_option(old: Any, new: Any) -> bool:
+    # An empty entity field ("") and a missing option both mean none.
+    return old == new or (old in (None, "") and new in (None, ""))
 
 
 def pump_hold(data: Mapping[str, Any] | None) -> Status | None:
@@ -110,6 +128,7 @@ class HeatingController(DataUpdateCoordinator[Decision]):
     ) -> None:
         self.indoor_entity_id: str = entry.options[CONF_INDOOR_SENSOR]
         self.outdoor_entity_id: str = entry.options[CONF_OUTDOOR_SENSOR]
+        self.weather_entity_id: str | None = entry.options.get(CONF_WEATHER_ENTITY) or None
         # Also arranges for async_shutdown to run when the entry unloads.
         super().__init__(
             hass,
@@ -126,6 +145,10 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             hass, STORAGE_VERSION, storage_key(entry.entry_id)
         )
         self._loaded = False
+        self._forecast: list[HourlyForecast] = []
+        self._forecast_fetched: datetime | None = None
+        self._forecast_tried: datetime | None = None
+        self._forecast_failing = False
 
     async def async_load(self) -> None:
         """Pick up where the controller left off before a restart."""
@@ -144,14 +167,18 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         pump = self._pump_data
         now = dt_util.utcnow().timestamp()
         setpoint = _as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None
+        outdoor = self.temperature(self.outdoor_entity_id)
+        outdoor_ahead, sun_cut = await self._async_forecast_inputs(outdoor, now)
         decision = self.core.step(
             Inputs(
                 now=now,
-                outdoor=self.temperature(self.outdoor_entity_id),
+                outdoor=outdoor,
                 indoor=self.temperature(self.indoor_entity_id),
                 setpoint=setpoint,
                 hold=pump_hold(pump),
                 space_heating=space_heating(pump),
+                outdoor_ahead=outdoor_ahead,
+                sun_cut=sun_cut,
             )
         )
         if decision.write is not None:
@@ -188,6 +215,104 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         )
         await self.pump.async_request_refresh()
         return decision
+
+    async def _async_forecast_inputs(
+        self, outdoor: float | None, now: float
+    ) -> tuple[float | None, float]:
+        """Look-ahead outdoor temperature and sun cut; (None, 0) without a forecast."""
+        if self.weather_entity_id is None or outdoor is None:
+            return None, 0.0
+        forecast = await self._async_forecast()
+        if not forecast:
+            return None, 0.0
+        settings = self.core.settings
+        ahead = lookahead_outdoor(outdoor, forecast, now, settings.lookahead_hours)
+        sun_cut = 0.0
+        if settings.sun_cut_max > 0:
+            sun_cut = settings.sun_cut_max * self._sun_score(forecast, now)
+        return ahead, sun_cut
+
+    def _sun_score(self, forecast: list[HourlyForecast], now: float) -> float:
+        """Forecast sun a few hours ahead, 0..1, using the real sun at this location."""
+        import astral  # noqa: PLC0415 - Home Assistant loads astral lazily too
+        import astral.sun  # noqa: PLC0415
+
+        config = self.hass.config
+        observer = astral.Observer(config.latitude, config.longitude, config.elevation)
+
+        def clear(at: float) -> float:
+            return clear_sky(astral.sun.elevation(observer, dt_util.utc_from_timestamp(at)))
+
+        start, end = self.core.settings.sun_window_hours
+        window = []
+        for at in window_times(now, start, end):
+            cloud = cloud_at(forecast, at)
+            if cloud is None:
+                return 0.0
+            window.append((clear(at), cloud))
+
+        # Compare with a clear sky over the sunniest stretch of that day.
+        middle = dt_util.as_local(dt_util.utc_from_timestamp(now + (start + end) / 2 * 3600))
+        noon = astral.sun.noon(observer, middle.date()).timestamp()
+        best = window_times(noon, -(end - start) / 2, (end - start) / 2)
+        return sun_score(window, sum(clear(at) for at in best) / len(best))
+
+    async def _async_forecast(self) -> list[HourlyForecast]:
+        """The hourly forecast, fetched at most every half hour; [] if too old."""
+        now = dt_util.utcnow()
+        if self._forecast_tried is None or now - self._forecast_tried >= FORECAST_REFRESH:
+            self._forecast_tried = now
+            await self._async_fetch_forecast(now)
+        if self._forecast_fetched is None or now - self._forecast_fetched > FORECAST_MAX_AGE:
+            return []
+        return self._forecast
+
+    async def _async_fetch_forecast(self, now: datetime) -> None:
+        try:
+            response = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"type": "hourly"},
+                target={"entity_id": self.weather_entity_id},
+                blocking=True,
+                return_response=True,
+            )
+            items = response[self.weather_entity_id]["forecast"]
+            forecast = self._parse_forecast(items)
+        except Exception as err:  # A forecast must never stop floor heating control.
+            if not self._forecast_failing:
+                _LOGGER.warning(
+                    "No hourly forecast from %s; floor heating carries on without it: %s",
+                    self.weather_entity_id,
+                    err,
+                )
+            self._forecast_failing = True
+            return
+        if self._forecast_failing:
+            _LOGGER.info("Hourly forecast from %s is back", self.weather_entity_id)
+        self._forecast_failing = False
+        self._forecast = forecast
+        self._forecast_fetched = now
+
+    def _parse_forecast(self, items: list[Mapping[str, Any]]) -> list[HourlyForecast]:
+        state = self.hass.states.get(self.weather_entity_id or "")
+        unit = (state.attributes.get("temperature_unit") if state else None) or (
+            self.hass.config.units.temperature_unit
+        )
+
+        def to_celsius(value: float) -> float:
+            if unit == UnitOfTemperature.CELSIUS:
+                return value
+            return TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
+
+        def parse_time(value: Any) -> float | None:
+            if isinstance(value, datetime):
+                return value.timestamp()
+            parsed = dt_util.parse_datetime(value) if isinstance(value, str) else None
+            return parsed.timestamp() if parsed else None
+
+        hours = [parse_hour(item, parse_time, to_celsius) for item in items]
+        return sorted((hour for hour in hours if hour is not None), key=lambda hour: hour.start)
 
     @property
     def _pump_data(self) -> Mapping[str, Any] | None:
@@ -280,7 +405,8 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             outdoor=outdoor,
             indoor=indoor,
             room_target=self.core.state.room_target,
-            setpoint=setpoint,
+            # The setpoint already has any sun cut taken off; the curve shouldn't.
+            setpoint=setpoint + (self.data.sun_cut if self.data else 0.0),
         )
         _LOGGER.info(
             "Calibrated floor heating curve to setpoint %s °C at %.1f °C outdoors: "
@@ -307,7 +433,7 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         changed = {
             key
             for key in self._options.keys() | options.keys()
-            if self._options.get(key) != options.get(key)
+            if not _same_option(self._options.get(key), options.get(key))
         }
         if not changed <= LIVE_OPTIONS:
             return False

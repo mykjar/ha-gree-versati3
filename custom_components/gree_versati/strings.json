@@ -54,7 +54,10 @@
           "heating_kp": "Room correction",
           "heating_ki": "Learning rate",
           "heating_outdoor_smoothing_hours": "Outdoor averaging",
-          "heating_manual_pause_hours": "Pause after a manual change"
+          "heating_manual_pause_hours": "Pause after a manual change",
+          "heating_weather_entity": "Weather forecast",
+          "heating_lookahead_hours": "Look ahead",
+          "heating_sun_cut_max": "Sun cut"
         },
         "data_description": {
           "heating_curve_cold_outdoor": "At or below this outdoor temperature the curve asks for the cold-point water temperature, for a 21 °C room.",
@@ -63,7 +66,10 @@
           "heating_kp": "Degrees of water added per degree the room is below target.",
           "heating_ki": "How fast a lasting room error is learned into the curve, per hour. 0 stops learning.",
           "heating_outdoor_smoothing_hours": "Averages the outdoor temperature over this time. 0 turns averaging off.",
-          "heating_manual_pause_hours": "After the setpoint is changed on the pump or in an app, control waits this long."
+          "heating_manual_pause_hours": "After the setpoint is changed on the pump or in an app, control waits this long.",
+          "heating_weather_entity": "Hourly forecast to look ahead with. Leave empty to work without a forecast.",
+          "heating_lookahead_hours": "The curve uses the average of now and the forecast for this many hours ahead, as the floor reacts hours late. 0 turns look-ahead off.",
+          "heating_sun_cut_max": "How far to lower the water when the forecast shows full sun a few hours ahead, so the floor isn't full of heat when the sun arrives. 0 turns it off."
         }
       }
     },
@@ -187,6 +193,12 @@
       },
       "heating_outdoor_temperature": {
         "name": "Smoothed outdoor temperature"
+      },
+      "heating_forecast_outdoor_temperature": {
+        "name": "Forecast outdoor temperature"
+      },
+      "heating_sun_cut": {
+        "name": "Sun cut"
       }
     },
     "climate": {

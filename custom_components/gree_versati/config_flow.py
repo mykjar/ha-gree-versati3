@@ -24,7 +24,8 @@ from .constants import (
     DOMAIN,
     PARAM_POW,
 )
-from .heating.options import heating_schema, validate_heating
+from .heating.const import DEFAULT_WEATHER_ENTITY
+from .heating.options import OPTIONAL_ENTITIES, heating_schema, validate_heating
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -140,14 +141,18 @@ class GreeVersatiOptionsFlow(config_entries.OptionsFlow):
         """Manage floor heating control."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            # A field left empty means none, not "keep the previous one".
+            user_input = {**dict.fromkeys(OPTIONAL_ENTITIES, ""), **user_input}
             errors = validate_heating(user_input)
             if not errors:
                 return self._async_save(user_input)
 
+        # Offer the forecast Home Assistant sets up out of the box, if it exists.
+        weather = DEFAULT_WEATHER_ENTITY if self.hass.states.get(DEFAULT_WEATHER_ENTITY) else None
         return self.async_show_form(
             step_id="heating",
             data_schema=heating_schema(
-                self._config_entry.options if user_input is None else user_input
+                self._config_entry.options if user_input is None else user_input, weather
             ),
             errors=errors,
         )

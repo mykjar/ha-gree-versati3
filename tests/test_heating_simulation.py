@@ -22,6 +22,13 @@ from custom_components.gree_versati.heating.curve import (
     HeatingCore,
     Inputs,
 )
+from custom_components.gree_versati.heating.forecast import (
+    HourlyForecast,
+    cloud_at,
+    lookahead_outdoor,
+    sun_score,
+    window_times,
+)
 
 STEP_SECONDS = 300
 STEPS_PER_DAY = 86400 // STEP_SECONDS
@@ -87,6 +94,115 @@ def no_sun(hours: float) -> float:
     return 0.0
 
 
+def sun_shape(hour_of_day: float) -> float:
+    """Clear-sky sun through south windows on an autumn day, 0..1."""
+    if not 9 <= hour_of_day <= 16:
+        return 0.0
+    return math.sin(math.pi * (hour_of_day - 9) / 7)
+
+
+# Average clear-sky value over the sunniest stretch the sun window can cover.
+_WINDOW = ControlSettings().sun_window_hours
+_SAMPLES = int(round((_WINDOW[1] - _WINDOW[0]) * 2)) + 1
+BEST_CLEAR = sum(sun_shape(12.5 + (i - (_SAMPLES - 1) / 2) / 2) for i in range(_SAMPLES)) / _SAMPLES
+
+
+def forecast_inputs(
+    forecast: list[HourlyForecast], now: float, outdoor: float, settings: ControlSettings
+) -> tuple[float | None, float]:
+    """Look-ahead temperature and sun cut, worked out as the integration does."""
+    ahead = lookahead_outdoor(outdoor, forecast, now, settings.lookahead_hours)
+    window = []
+    for at in window_times(now, *settings.sun_window_hours):
+        cloud = cloud_at(forecast, at)
+        if cloud is None:
+            return ahead, 0.0
+        window.append((sun_shape((at / 3600) % 24), cloud))
+    return ahead, settings.sun_cut_max * sun_score(window, BEST_CLEAR)
+
+
+@dataclass
+class ForecastWeather:
+    """What the weather does, and what its forecast says it will do."""
+
+    outdoor: Callable[[float], float]
+    sun: list[float]  # per day, 0 overcast .. 1 clear
+    forecast_sun: list[float]
+    temperature_bias: list[float]  # per day, °C the forecast is off by
+    peak_w: float
+    seed: int
+
+    def solar(self, hours: float) -> float:
+        day, hour = divmod(hours, 24)
+        # Passing clouds: up to 30 % either side of the day's sunshine.
+        passing = 1 + 0.3 * math.sin(hours * 2.3 + self.seed)
+        sunshine = min(max(self.sun[int(day) % len(self.sun)] * passing, 0.0), 1.0)
+        return self.peak_w * sunshine * sun_shape(hour)
+
+    def forecast(self, now: float) -> list[HourlyForecast]:
+        """Hourly forecast issued at `now`: errors grow with lead time."""
+        first = now // 3600 * 3600
+        hours = []
+        for step in range(13):
+            start = first + step * 3600
+            day = int(start // 86400) % len(self.sun)
+            lead = min((start - now) / 3600 / 12, 1.0)
+            hours.append(
+                HourlyForecast(
+                    start=start,
+                    temperature=self.outdoor(start / 3600) + self.temperature_bias[day] * lead,
+                    cloud=1 - self.forecast_sun[day],
+                )
+            )
+        return hours
+
+
+def forecast_weather(
+    outdoor: Callable[[float], float],
+    sun: list[float],
+    peak_w: float,
+    seed: int,
+    wrong_share: float = 0.05,
+) -> ForecastWeather:
+    """Forecasts off by ~0.2 in sunshine and ~1.5 °C at 12 h; some days plain wrong."""
+    rng = random.Random(seed)
+    forecast_sun = [
+        1 - day if rng.random() < wrong_share else min(max(day + rng.gauss(0, 0.2), 0), 1)
+        for day in sun
+    ]
+    bias = [rng.gauss(0, 1.5) for _ in sun]
+    return ForecastWeather(outdoor, sun, forecast_sun, bias, peak_w, seed)
+
+
+def winter_with_forecast(seed: int) -> ForecastWeather:
+    """The winter fortnight, sunny on days 2, 3, 10 and 11."""
+    sun = [1.0 if day in (2, 3, 10, 11) else 0.0 for day in range(14)]
+    return forecast_weather(winter_fortnight, sun, 1500.0, seed)
+
+
+def sunny_autumn(seed: int, wrong_share: float = 0.05) -> ForecastWeather:
+    """Mild days, sun most of them, a house with big south windows."""
+    rng = random.Random(seed)
+    sun = [rng.choice([0.0, 0.2, 0.5, 0.8, 1.0, 1.0]) for _ in range(14)]
+
+    def outdoor(hours: float) -> float:
+        base = 6 + 3 * math.sin(hours / 24 / 2.3)
+        return base + 4 * math.sin(2 * math.pi * ((hours % 24) - 9) / 24)
+
+    return forecast_weather(outdoor, sun, 2500.0, seed, wrong_share)
+
+
+def cold_and_clear(seed: int) -> ForecastWeather:
+    """High-pressure winter: clear, cold, and low sun that gives little heat."""
+    rng = random.Random(seed)
+    sun = [rng.choice([0.8, 0.9, 1.0]) for _ in range(14)]
+
+    def outdoor(hours: float) -> float:
+        return -12 + 5 * math.sin(2 * math.pi * ((hours % 24) - 9) / 24)
+
+    return forecast_weather(outdoor, sun, 1000.0, seed)
+
+
 @dataclass
 class Result:
     rooms: list[float] = field(default_factory=list)
@@ -99,6 +215,16 @@ class Result:
         """Share of the time the room is within ±0.5 °C of target."""
         return sum(abs(room - ROOM_TARGET) <= 0.5 for room in self.rooms) / len(self.rooms)
 
+    @property
+    def too_warm(self) -> float:
+        """Degree-hours more than 0.5 °C above target."""
+        return sum(max(room - ROOM_TARGET - 0.5, 0) for room in self.rooms) * STEP_SECONDS / 3600
+
+    @property
+    def too_cold(self) -> float:
+        """Degree-hours more than 0.5 °C below target."""
+        return sum(max(ROOM_TARGET - 0.5 - room, 0) for room in self.rooms) * STEP_SECONDS / 3600
+
 
 def simulate(
     house: House,
@@ -108,23 +234,33 @@ def simulate(
     days: int = 14,
     settings: ControlSettings | None = None,
     start_setpoint: int = 26,
+    forecast: Callable[[float], list[HourlyForecast]] | None = None,
 ) -> Result:
-    """Run the controller in write mode, as the integration does, every 5 minutes."""
-    core = HeatingCore(
-        settings or ControlSettings(),
-        ControlState(room_target=ROOM_TARGET, write_enabled=True),
-    )
+    """Run the controller in write mode, as the integration does, every 5 minutes.
+
+    With a `forecast` (the hourly forecast issued at a given time) it looks
+    ahead and lowers the curve for sun, through the same code as the
+    integration.
+    """
+    settings = settings or ControlSettings()
+    core = HeatingCore(settings, ControlState(room_target=ROOM_TARGET, write_enabled=True))
     setpoint = start_setpoint
     result = Result(writes_per_day=[0] * days)
 
     for step in range(days * 86400 // STEP_SECONDS):
         now = step * STEP_SECONDS
+        outdoor = round(outdoor_at(now / 3600), 1)
+        outdoor_ahead, sun_cut = None, 0.0
+        if forecast is not None:
+            outdoor_ahead, sun_cut = forecast_inputs(forecast(now), now, outdoor, settings)
         decision = core.step(
             Inputs(
                 now=now,
-                outdoor=round(outdoor_at(now / 3600), 1),
+                outdoor=outdoor,
                 indoor=round(house.room, 1),
                 setpoint=setpoint,
+                outdoor_ahead=outdoor_ahead,
+                sun_cut=sun_cut,
             )
         )
         if decision.write is not None:
@@ -200,3 +336,52 @@ def test_noisy_outdoor_sensor(loss: float) -> None:
 
     assert result.comfortable_share >= 0.95
     assert max(result.writes_per_day) <= 12
+
+
+# Weather forecasts: looking ahead and lowering the curve for sun.
+
+FORECAST_SCENARIOS: dict[str, Callable[[int], ForecastWeather]] = {
+    "winter fortnight": winter_with_forecast,
+    "sunny autumn": sunny_autumn,
+    "sunny autumn, 30 % of days forecast wrong": lambda seed: sunny_autumn(seed, wrong_share=0.3),
+    "cold and clear": cold_and_clear,
+}
+
+
+@pytest.mark.parametrize("scenario", list(FORECAST_SCENARIOS))
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("loss", [125.0, 150.0, 180.0])
+def test_forecast_keeps_the_room_steadier(scenario: str, seed: int, loss: float) -> None:
+    weather = FORECAST_SCENARIOS[scenario](seed)
+
+    without = simulate(House(loss=loss), weather.outdoor, sun_at=weather.solar)
+    ahead = simulate(
+        House(loss=loss), weather.outdoor, sun_at=weather.solar, forecast=weather.forecast
+    )
+
+    assert ahead.comfortable_share >= without.comfortable_share + 0.02
+    # Never colder, even when a forecast promises sun that doesn't come.
+    assert ahead.too_cold <= without.too_cold + 0.05
+    assert ahead.too_warm <= without.too_warm + 0.1
+    assert max(ahead.writes_per_day) <= 12
+
+
+def test_forecast_cuts_overheating_on_sunny_days() -> None:
+    too_warm_without = too_warm_ahead = 0.0
+    for seed in (0, 1):
+        weather = sunny_autumn(seed)
+        too_warm_without += simulate(House(), weather.outdoor, sun_at=weather.solar).too_warm
+        too_warm_ahead += simulate(
+            House(), weather.outdoor, sun_at=weather.solar, forecast=weather.forecast
+        ).too_warm
+
+    assert too_warm_ahead <= 0.4 * too_warm_without
+
+
+def test_without_a_usable_forecast_nothing_changes() -> None:
+    weather = sunny_autumn(0)
+
+    without = simulate(House(), weather.outdoor, sun_at=weather.solar)
+    empty = simulate(House(), weather.outdoor, sun_at=weather.solar, forecast=lambda now: [])
+
+    assert empty.rooms == without.rooms

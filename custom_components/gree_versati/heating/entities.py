@@ -130,6 +130,10 @@ class FloorHeatingClimate(HeatingEntity, ClimateEntity):
         return {
             "status": decision.status if decision else None,
             "outdoor_temperature": _rounded(decision.outdoor if decision else None),
+            "forecast_outdoor_temperature": _rounded(
+                decision.outdoor_ahead if decision else None
+            ),
+            "sun_cut": _rounded(decision.sun_cut if decision else None),
             "curve_water_temperature": _rounded(decision.curve_flow if decision else None),
             "room_correction": _rounded(decision.correction if decision else None),
             "target_water_temperature": _rounded(decision.target_flow if decision else None),
@@ -190,6 +194,18 @@ HEATING_SENSORS: tuple[HeatingSensorDescription, ...] = (
     _temperature("heating_suggested_setpoint", lambda d: d.suggested_setpoint, precision=0),
     # The outdoor temperature as the curve sees it, after smoothing.
     _temperature("heating_outdoor_temperature", lambda d: d.outdoor),
+    # Now and the forecast for the next few hours, averaged.
+    _temperature("heating_forecast_outdoor_temperature", lambda d: d.outdoor_ahead),
+    # How far the curve is lowered ahead of forecast sun; a difference, so no
+    # device class and never unit-converted.
+    HeatingSensorDescription(
+        key="heating_sun_cut",
+        translation_key="heating_sun_cut",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=1,
+        value_fn=lambda d: d.sun_cut,
+    ),
     # A temperature difference: no device class, so it is never unit-converted.
     HeatingSensorDescription(
         key="heating_learned_offset",

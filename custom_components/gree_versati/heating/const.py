@@ -21,6 +21,9 @@ CONF_KP: Final = "heating_kp"
 CONF_KI: Final = "heating_ki"
 CONF_OUTDOOR_SMOOTHING_HOURS: Final = "heating_outdoor_smoothing_hours"
 CONF_MANUAL_PAUSE_HOURS: Final = "heating_manual_pause_hours"
+CONF_WEATHER_ENTITY: Final = "heating_weather_entity"
+CONF_LOOKAHEAD_HOURS: Final = "heating_lookahead_hours"
+CONF_SUN_CUT_MAX: Final = "heating_sun_cut_max"
 
 # Changing these only retunes the controller; anything else reloads the entry.
 LIVE_OPTIONS: Final = frozenset(
@@ -35,6 +38,8 @@ LIVE_OPTIONS: Final = frozenset(
         CONF_KI,
         CONF_OUTDOOR_SMOOTHING_HOURS,
         CONF_MANUAL_PAUSE_HOURS,
+        CONF_LOOKAHEAD_HOURS,
+        CONF_SUN_CUT_MAX,
     }
 )
 
@@ -44,6 +49,12 @@ STALE_AFTER: Final = timedelta(hours=12)
 # Measured water this far from the setpoint means the pump is busy with
 # something else (hot water, defrost), not heating the floor.
 BUSY_FLOW_DIFFERENCE: Final = 8.0
+# How often to fetch the hourly forecast, and how old it may get before the
+# controller carries on without it.
+FORECAST_REFRESH: Final = timedelta(minutes=30)
+FORECAST_MAX_AGE: Final = timedelta(hours=3)
+# Suggested in the settings form, as Home Assistant sets it up out of the box.
+DEFAULT_WEATHER_ENTITY: Final = "weather.forecast_home"
 
 MIN_ROOM_TARGET: Final = 16.0
 MAX_ROOM_TARGET: Final = 26.0
@@ -75,6 +86,8 @@ def settings_from_options(options: Mapping[str, Any]) -> ControlSettings:
             CONF_OUTDOOR_SMOOTHING_HOURS, _DEFAULTS.outdoor_smoothing_hours
         ),
         manual_pause_hours=value(CONF_MANUAL_PAUSE_HOURS, _DEFAULTS.manual_pause_hours),
+        lookahead_hours=value(CONF_LOOKAHEAD_HOURS, _DEFAULTS.lookahead_hours),
+        sun_cut_max=value(CONF_SUN_CUT_MAX, _DEFAULTS.sun_cut_max),
     )
 
 
@@ -94,6 +107,8 @@ def options_with_defaults(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_KI: settings.ki,
         CONF_OUTDOOR_SMOOTHING_HOURS: settings.outdoor_smoothing_hours,
         CONF_MANUAL_PAUSE_HOURS: settings.manual_pause_hours,
+        CONF_LOOKAHEAD_HOURS: settings.lookahead_hours,
+        CONF_SUN_CUT_MAX: settings.sun_cut_max,
     }
 
 
