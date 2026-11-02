@@ -39,7 +39,7 @@ async def async_setup_heating(
     except Exception:  # Never take the pump's own entities down with it.
         _LOGGER.exception("Floor heating control failed to start and stays off")
         return None
-    async_register_card(hass)
+    await async_register_card(hass)
     return controller
 
 

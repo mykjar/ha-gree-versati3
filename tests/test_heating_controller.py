@@ -37,7 +37,13 @@ from homeassistant.const import (
     STATE_ON,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import (
+    CoreState,
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -675,6 +681,37 @@ async def test_dashboard_card_is_served_and_loaded(
     response = await (await hass_client()).get("/gree_versati/floor-heating-card.js")
     assert response.status == 200
     assert "customElements.define" in await response.text()
+
+
+async def test_dashboard_card_is_ready_before_startup_finishes(
+    hass: HomeAssistant, pump: FakePump
+) -> None:
+    # Dashboards are served while Home Assistant is still starting.
+    assert await async_setup_component(hass, "http", {})
+    hass.config.components.add("frontend")
+    hass.set_state(CoreState.starting)
+
+    with patch("custom_components.gree_versati.heating.card.add_extra_js_url") as add_js:
+        await setup(hass)
+
+    add_js.assert_called_once()
+
+
+async def test_a_card_problem_leaves_control_running(
+    hass: HomeAssistant, pump: FakePump, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert await async_setup_component(hass, "http", {})
+    hass.config.components.add("frontend")
+
+    with patch(
+        "custom_components.gree_versati.heating.card.add_extra_js_url",
+        side_effect=RuntimeError("boom"),
+    ):
+        entry = await setup(hass)
+
+    assert runtime(hass, entry)[DATA_HEATING] is not None
+    assert state(hass, "climate", "floor_heating").state == HVACMode.HEAT
+    assert "Could not load the floor heating dashboard card" in caplog.text
 
 
 async def test_dashboard_card_needs_control_enabled(hass: HomeAssistant, pump: FakePump) -> None:
