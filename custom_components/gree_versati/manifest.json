@@ -8,6 +8,7 @@
     "@mykjar"
   ],
   "config_flow": true,
+  "after_dependencies": ["frontend", "http"],
   "iot_class": "local_polling",
   "requirements": [
     "pycryptodome==3.21.0"
