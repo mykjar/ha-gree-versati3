@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -10,6 +11,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.service import async_register_admin_service
 
 from .constants import (
     ATTR_KEY,
@@ -41,6 +43,8 @@ GET_PARAMS_SCHEMA = vol.Schema(
     }
 )
 
+_DECIMAL = re.compile(r"[+-]?(\d+\.\d*|\.\d+)")
+
 
 def _normalize_value(value: Any) -> Any:
     if not isinstance(value, str):
@@ -56,7 +60,13 @@ def _normalize_value(value: Any) -> Any:
     try:
         return int(normalized)
     except ValueError:
+        pass
+
+    # Only plain decimals such as "35.0" or "-1.5"; "1e3", "nan" and "inf" stay text.
+    if not _DECIMAL.fullmatch(normalized):
         return normalized
+    number = float(normalized)
+    return int(number) if number.is_integer() else number
 
 
 def _matching_entries(
@@ -126,12 +136,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         return {"devices": results}
 
-    hass.services.async_register(
+    # Raw writes bypass the entities' ranges and floor heating control's
+    # limits, so only admins (or automations with no user) may make them.
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_SET_PARAM,
         async_handle_set_param,
         schema=SET_PARAM_SCHEMA,
-        supports_response=SupportsResponse.NONE,
     )
 
     hass.services.async_register(

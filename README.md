@@ -145,6 +145,12 @@ It shows up to three graphs:
 - **Room and outdoor:** the room against its target, with heating periods shaded, the outdoor temperature the curve uses and, with a forecast, the outdoor temperature over the next hours.
 - **Adjustments:** the sun cut and the learned offset, in °C.
 
+### Raw parameter actions
+
+`gree_versati.set_param` writes any parameter straight to the pump. It skips the entities' ranges and floor heating control's limits, so a wrong value can overheat a screed floor or switch heating off. **Only admin users can call it.** A non-admin user gets Home Assistant's "unauthorized" error, and nothing is sent to the pump. Automations and scripts with no user attached can still call it. `gree_versati.get_params` stays open to all users.
+
+A value given as text is sent as a number when it holds a whole or decimal number: `"35"` and `"35.0"` as 35, `"1.5"` as 1.5. `"true"` and `"false"` are sent as booleans, and any other text as text.
+
 ### Development and tests
 
 Run the tests with:

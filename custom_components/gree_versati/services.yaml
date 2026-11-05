@@ -1,6 +1,6 @@
 set_param:
   name: Set Parameter
-  description: Set one protocol parameter on one or more configured devices.
+  description: Set one protocol parameter on one or more configured devices. Admin users only. It skips the entities' ranges and floor heating control's limits.
   fields:
     key:
       name: Key
@@ -11,7 +11,7 @@ set_param:
         text:
     value:
       name: Value
-      description: Value to set (string, int, or bool).
+      description: Value to set. Text holding a whole or decimal number is sent as a number ("35" and "35.0" as 35, "1.5" as 1.5), and "true"/"false" as a boolean.
       required: true
       example: 45
       selector:
