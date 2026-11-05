@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Callable
 from typing import Any
 
 from Crypto.Cipher import AES
@@ -34,19 +35,26 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def seal(payload: dict[str, Any], *, key: str = KEY, encryption: str = ECB) -> bytes:
+def _gcm() -> Any:
+    gcm = AES.new(KEY.encode(), AES.MODE_GCM, nonce=GCM_NONCE)
+    gcm.update(GCM_AAD)
+    return gcm
+
+
+def _ecb() -> Any:
+    return AES.new(KEY.encode(), AES.MODE_ECB)
+
+
+def seal(payload: dict[str, Any], *, encryption: str = ECB) -> bytes:
     """Return a datagram carrying ``payload`` encrypted the way a pump does it."""
     raw = json.dumps(payload).encode()
     envelope: dict[str, Any] = {"t": "pack", "i": 1, "uid": 0, "cid": DEVICE_ID, "tcid": ""}
     if encryption == GCM:
-        gcm = AES.new(key.encode(), AES.MODE_GCM, nonce=GCM_NONCE)
-        gcm.update(GCM_AAD)
-        packed, tag = gcm.encrypt_and_digest(raw)
+        packed, tag = _gcm().encrypt_and_digest(raw)
         envelope["pack"] = _b64(packed)
         envelope["tag"] = _b64(tag)
     else:
-        ecb = AES.new(key.encode(), AES.MODE_ECB)
-        envelope["pack"] = _b64(ecb.encrypt(pad(raw, AES.block_size)))
+        envelope["pack"] = _b64(_ecb().encrypt(pad(raw, AES.block_size)))
     return json.dumps(envelope).encode()
 
 
@@ -99,11 +107,12 @@ def not_base64(datagram: bytes) -> bytes:
     return json.dumps(envelope).encode()
 
 
-class FakePump:
+class WirePump:
     """Answers the client's requests like a pump at ``ip`` would.
 
     Scenario knobs:
     - ``silent``: the pump never answers.
+    - ``write_status``: the ``r`` code the pump answers writes with.
     - ``ahead``: datagrams that reach the client ahead of every reply, as if
       someone else on the network raced the pump.
     - ``chatter``: a datagram that keeps arriving, forever, while the client waits.
@@ -124,7 +133,7 @@ class FakePump:
         self.write_status = 200
         self.ahead: list[Datagram] = []
         self.chatter: Datagram | None = None
-        self.tamper: Any = None
+        self.tamper: Callable[[bytes], bytes] | None = None
 
     @property
     def address(self) -> Address:
@@ -133,28 +142,27 @@ class FakePump:
     def socket(self) -> FakeSocket:
         return FakeSocket(self)
 
-    def answer(self, data: bytes, address: Address) -> list[Datagram]:
-        replies = list(self.ahead)
+    def datagrams_after_send(self, data: bytes, address: Address) -> list[Datagram]:
+        """Return what reaches the client after it sends ``data`` to ``address``."""
+        datagrams = list(self.ahead)
         request = self._open(data) if address == self.address else None
         if request is not None and not self.silent:
             reply = seal(self._respond(request), encryption=self.encryption)
             if self.tamper is not None:
                 reply = self.tamper(reply)
-            replies.append((reply, self.address))
-        return replies
+            datagrams.append((reply, self.address))
+        return datagrams
 
     def _open(self, data: bytes) -> dict[str, Any] | None:
         """Decrypt a request; like a real pump, ignore what it can't read."""
         try:
             envelope = json.loads(data)
             packed = base64.b64decode(envelope["pack"])
-            key = KEY.encode()
             if self.encryption == GCM:
-                gcm = AES.new(key, AES.MODE_GCM, nonce=GCM_NONCE)
-                gcm.update(GCM_AAD)
-                raw = gcm.decrypt_and_verify(packed, base64.b64decode(envelope["tag"]))
+                tag = base64.b64decode(envelope["tag"])
+                raw = _gcm().decrypt_and_verify(packed, tag)
             else:
-                raw = unpad(AES.new(key, AES.MODE_ECB).decrypt(packed), AES.block_size)
+                raw = unpad(_ecb().decrypt(packed), AES.block_size)
             return json.loads(raw)
         except (KeyError, TypeError, ValueError):
             return None
@@ -172,20 +180,20 @@ class FakePump:
 class FakeSocket:
     """The client's end of the network, wired to a fake pump."""
 
-    def __init__(self, pump: FakePump) -> None:
+    def __init__(self, pump: WirePump) -> None:
         self._pump = pump
         self._inbox: asyncio.Queue[Datagram] = asyncio.Queue()
-        self.closed = False
 
     async def sendto(self, data: bytes, address: Address) -> None:
-        for datagram in self._pump.answer(data, address):
+        for datagram in self._pump.datagrams_after_send(data, address):
             self._inbox.put_nowait(datagram)
 
     async def recvfrom(self) -> Datagram:
-        if self._pump.chatter is None or not self._inbox.empty():
+        chatter = self._pump.chatter
+        if chatter is None or not self._inbox.empty():
             return await self._inbox.get()
         await asyncio.sleep(0.005)
-        return self._pump.chatter
+        return chatter
 
     def close(self) -> None:
-        self.closed = True
+        pass

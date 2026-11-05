@@ -26,6 +26,8 @@ GCM_AAD = b"qualcomm-test"
 
 _LOGGER = logging.getLogger(__name__)
 
+Address = tuple[str, int]
+
 
 class GreeVersatiClientError(HomeAssistantError):
     """Raised when protocol communication with the device fails."""
@@ -34,10 +36,10 @@ class GreeVersatiClientError(HomeAssistantError):
 class DatagramSocket(Protocol):
     """One request's UDP socket: the client's only door to the network."""
 
-    async def sendto(self, data: bytes, address: tuple[str, int]) -> None:
+    async def sendto(self, data: bytes, address: Address) -> None:
         """Send one datagram to ``address``."""
 
-    async def recvfrom(self) -> tuple[bytes, tuple[str, int]]:
+    async def recvfrom(self) -> tuple[bytes, Address]:
         """Wait for the next datagram from anyone; return it and its sender."""
 
     def close(self) -> None:
@@ -51,10 +53,10 @@ class _UdpSocket:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
 
-    async def sendto(self, data: bytes, address: tuple[str, int]) -> None:
+    async def sendto(self, data: bytes, address: Address) -> None:
         await asyncio.get_running_loop().sock_sendto(self._sock, data, address)
 
-    async def recvfrom(self) -> tuple[bytes, tuple[str, int]]:
+    async def recvfrom(self) -> tuple[bytes, Address]:
         return await asyncio.get_running_loop().sock_recvfrom(
             self._sock, DEFAULT_MAX_DATAGRAM_BYTES
         )
@@ -289,10 +291,10 @@ class GreeVersatiProtocolClient:
         for _attempt in range(self._retries + 1):
             sock = self._open_socket()
             try:
-                pump_ip = await self._async_resolve_pump_ip()
-                await sock.sendto(payload, (pump_ip, self._port))
+                device_ip = await self._async_resolve_device_ip()
+                await sock.sendto(payload, (device_ip, self._port))
                 response_bytes = await asyncio.wait_for(
-                    self._async_receive_from(sock, pump_ip),
+                    self._async_receive_from(sock, device_ip),
                     timeout=self._timeout,
                 )
                 return self._parse_response(response_bytes, encryption)
@@ -315,25 +317,25 @@ class GreeVersatiProtocolClient:
             f"No valid response from device after {self._retries + 1} attempts"
         ) from last_error
 
-    async def _async_resolve_pump_ip(self) -> str:
-        """Return the pump's IPv4 address: the configured host, resolved if a name."""
+    async def _async_resolve_device_ip(self) -> str:
+        """Return the device's IPv4 address: the configured host, resolved if a name."""
         addresses = await asyncio.get_running_loop().getaddrinfo(
             self._host, self._port, family=socket.AF_INET, type=socket.SOCK_DGRAM
         )
         return str(addresses[0][4][0])
 
-    async def _async_receive_from(self, sock: DatagramSocket, pump_ip: str) -> bytes:
-        """Return the next datagram from the pump, skipping anyone else's."""
+    async def _async_receive_from(self, sock: DatagramSocket, device_ip: str) -> bytes:
+        """Return the next datagram from the device, skipping anyone else's."""
         while True:
             data, (sender_ip, sender_port) = await sock.recvfrom()
-            if sender_ip == pump_ip:
+            if sender_ip == device_ip:
                 return data
             _LOGGER.debug(
                 "Ignoring datagram from %s:%s, waiting for device_id=%s at %s",
                 sender_ip,
                 sender_port,
                 self._device_id,
-                pump_ip,
+                device_ip,
             )
 
     def _parse_response(self, response_bytes: bytes, encryption: str) -> dict[str, Any]:
@@ -350,7 +352,7 @@ class GreeVersatiProtocolClient:
             raise GreeVersatiClientError("Failed to decode response JSON") from err
 
         # Only what decrypts with the device key counts: a plaintext reply could
-        # come from anyone, so it is never pump data or a write's confirmation.
+        # come from anyone, so it is never device data or a write's confirmation.
         if not isinstance(message, dict) or not isinstance(message.get("pack"), str):
             raise GreeVersatiClientError("Response has no encrypted payload")
 
