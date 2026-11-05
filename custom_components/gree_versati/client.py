@@ -8,7 +8,7 @@ import json
 import logging
 import socket
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, NamedTuple, Protocol
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -28,11 +28,14 @@ _LOGGER = logging.getLogger(__name__)
 
 Address = tuple[str, int]
 
-# One way of asking the pump: an encryption, and an index into the request
-# formats of a read or a write.
-Combination = tuple[str, int]
-_READ = "read"
-_WRITE = "write"
+_Operation = Literal["read", "write"]
+
+
+class _Combination(NamedTuple):
+    """One way of asking the pump: an encryption and a request format."""
+
+    encryption: str
+    format_index: int
 
 
 class GreeVersatiClientError(HomeAssistantError):
@@ -96,7 +99,7 @@ class GreeVersatiProtocolClient:
         self._retries = retries
         self._key_bytes = self._validate_key(key)
         # The encryption and request format each operation last worked with.
-        self._working: dict[str, Combination] = {}
+        self._working: dict[_Operation, _Combination] = {}
         self._open_socket = socket_factory
 
     @staticmethod
@@ -139,7 +142,7 @@ class GreeVersatiProtocolClient:
                 raise GreeVersatiClientError("Device reply held no values")
             return {key: values[key] for key in keys if key in values}
 
-        return await self._async_exchange(_READ, formats, requested_values)
+        return await self._async_exchange("read", formats, requested_values)
 
     async def async_set(self, params: dict[str, Any]) -> None:
         """Set one or more parameters on the device."""
@@ -166,71 +169,83 @@ class GreeVersatiProtocolClient:
             if isinstance(status, int) and status not in (0, 200):
                 raise GreeVersatiClientError(f"Device returned error code: {status}")
 
-        await self._async_exchange(_WRITE, formats, confirm)
+        await self._async_exchange("write", formats, confirm)
 
     async def _async_exchange[T](
         self,
-        operation: str,
+        operation: _Operation,
         formats: Sequence[dict[str, Any]],
-        use: Callable[[dict[str, Any]], T],
+        accept: Callable[[dict[str, Any]], T],
     ) -> T:
-        """Send ``formats`` until a reply passes ``use``; return what it returns.
+        """Send ``formats`` until ``accept`` takes a reply; return what it returns.
 
-        ``use`` raises GreeVersatiClientError for a reply it can't use. The
+        ``accept`` raises GreeVersatiClientError for a reply it can't use. The
         combination of encryption and format that worked is tried first next time.
         """
         working = self._working.get(operation)
-        last_error: GreeVersatiClientError | None = None
+        error: GreeVersatiClientError | None = None
         for combination in self._combinations(operation, len(formats)):
-            encryption, index = combination
-            payload = formats[index]
+            is_working = combination == working
+            payload = formats[combination.format_index]
             # Only a combination the pump has answered earns retries: while
             # discovering, a pump may silently ignore what it doesn't understand.
-            attempts = self._retries + 1 if combination == working else 1
+            attempts = self._retries + 1 if is_working else 1
             try:
-                request = self._build_outer_message(payload, encryption)
-                response = await self._async_request(request, encryption, attempts=attempts)
-                result = use(response)
+                request = self._build_outer_message(payload, combination.encryption)
+                response = await self._async_request(
+                    request, combination.encryption, attempts=attempts
+                )
+                result = accept(response)
             except GreeVersatiClientError as err:
+                silent = isinstance(err, _NoReply)
                 # The pump has gone silent: other combinations won't wake it.
                 # One that answered may still understand another combination.
-                if combination == working and isinstance(err, _NoReply):
+                if silent and is_working:
                     raise
                 _LOGGER.debug(
                     "%s attempt failed for device_id=%s encryption=%s payload_keys=%s: %s",
                     operation,
                     self._device_id,
-                    encryption,
+                    combination.encryption,
                     list(payload),
                     err,
                 )
-                last_error = err
+                # What the pump said beats the silence of combinations it ignores.
+                if error is None or not silent:
+                    error = err
                 continue
-            if combination != working:
+            if not is_working:
                 _LOGGER.debug(
                     "device_id=%s answers %s with encryption=%s payload_keys=%s",
                     self._device_id,
                     operation,
-                    encryption,
+                    combination.encryption,
                     list(payload),
                 )
                 self._working[operation] = combination
             return result
 
-        assert last_error is not None
-        raise last_error
+        if error is None:
+            raise GreeVersatiClientError(f"No request formats to {operation} with")
+        raise error
 
-    def _combinations(self, operation: str, formats: int) -> list[Combination]:
+    def _combinations(
+        self, operation: _Operation, format_count: int
+    ) -> list[_Combination]:
         """Every encryption and format, with what worked before first."""
         working = self._working.get(operation)
         # The pump speaks one encryption: lead with the one that worked, for
         # this operation or else the other.
         lead = working or next(iter(self._working.values()), None)
         encryptions = (ENCRYPTION_ECB, ENCRYPTION_GCM)
-        if lead is not None and lead[0] == ENCRYPTION_GCM:
+        if lead is not None and lead.encryption == ENCRYPTION_GCM:
             encryptions = (ENCRYPTION_GCM, ENCRYPTION_ECB)
 
-        combinations = [(e, index) for e in encryptions for index in range(formats)]
+        combinations = [
+            _Combination(encryption, index)
+            for encryption in encryptions
+            for index in range(format_count)
+        ]
         if working is not None:
             combinations.remove(working)
             combinations.insert(0, working)

@@ -60,6 +60,9 @@ async def write(client: GreeVersatiProtocolClient) -> Any:
     return await client.async_set({"HeWatOutTemSet": 28})
 
 
+READ_AND_WRITE = pytest.mark.parametrize("operation", [read, write], ids=["read", "write"])
+
+
 def sent(pump: WirePump) -> list[tuple[str, tuple[str, ...]]]:
     """Each request the pump received, as its encryption and the fields it carried."""
     return [(encryption, tuple(sorted(body))) for encryption, body in pump.received]
@@ -134,11 +137,12 @@ async def test_writes_values_to_the_pump(encryption: str) -> None:
     assert pump.values["HeWatOutTemSet"] == 28
 
 
-async def test_a_write_the_pump_rejects_raises() -> None:
+async def test_a_write_the_pump_rejects_raises_the_pumps_error() -> None:
     pump = WirePump(values=PUMP_VALUES)
     pump.write_status = 400
 
-    with pytest.raises(GreeVersatiClientError):
+    # Not the silence of the encryption the pump doesn't speak, tried after.
+    with pytest.raises(GreeVersatiClientError, match="error code: 400"):
         await make_client(pump).async_set({"HeWatOutTemSet": 28})
 
 
@@ -265,7 +269,7 @@ async def test_the_combination_that_worked_is_tried_first_from_then_on(
     assert sent(pump) == [answered]
 
 
-@pytest.mark.parametrize("operation", [read, write], ids=["read", "write"])
+@READ_AND_WRITE
 async def test_a_pump_gone_silent_fails_within_one_round_of_attempts(
     operation: Operation,
 ) -> None:
@@ -294,7 +298,7 @@ async def test_a_reply_with_no_values_moves_on_to_the_other_formats() -> None:
     assert values == {"HeWatOutTemSet": 30, "Pow": 1}
 
 
-@pytest.mark.parametrize("operation", [read, write], ids=["read", "write"])
+@READ_AND_WRITE
 async def test_a_reply_that_wont_decrypt_moves_on_to_the_other_encryption(
     operation: Operation,
 ) -> None:

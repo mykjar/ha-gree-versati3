@@ -163,32 +163,22 @@ class WirePump:
         datagrams = list(self.ahead)
         if address != self.address:
             return datagrams
-        self.received.append(_sniff(data))
-        request = self._open(data)
+        sniffed = _sniff(data)
+        if sniffed is not None:
+            self.received.append(sniffed)
         if self.silent:
             return datagrams
-        if request is None and self.answers_unreadable:
-            datagrams.append((seal(UNREADABLE_REPLY, encryption=self.encryption), self.address))
+        # Like a real pump, it reads only its own encryption.
+        encryption, request = sniffed if sniffed is not None else (None, None)
+        if encryption != self.encryption:
+            if self.answers_unreadable:
+                datagrams.append((seal(UNREADABLE_REPLY, encryption=self.encryption), self.address))
         elif request is not None and self.understands(request):
             reply = seal(self._respond(request), encryption=self.encryption)
             if self.tamper is not None:
                 reply = self.tamper(reply)
             datagrams.append((reply, self.address))
         return datagrams
-
-    def _open(self, data: bytes) -> dict[str, Any] | None:
-        """Decrypt a request; like a real pump, ignore what it can't read."""
-        try:
-            envelope = json.loads(data)
-            packed = base64.b64decode(envelope["pack"])
-            if self.encryption == GCM:
-                tag = base64.b64decode(envelope["tag"])
-                raw = _gcm().decrypt_and_verify(packed, tag)
-            else:
-                raw = unpad(_ecb().decrypt(packed), AES.block_size)
-            return json.loads(raw)
-        except (KeyError, TypeError, ValueError):
-            return None
 
     def _respond(self, request: dict[str, Any]) -> dict[str, Any]:
         if request.get("t") == "cmd":
@@ -202,14 +192,17 @@ class WirePump:
         return status_reply({key: self.values[key] for key in keys if key in self.values})
 
 
-def _sniff(data: bytes) -> Request:
+def _sniff(data: bytes) -> Request | None:
     """Decrypt a request with whichever encryption the client sealed it in."""
-    envelope = json.loads(data)
-    packed = base64.b64decode(envelope["pack"])
-    if "tag" in envelope:
-        raw = _gcm().decrypt_and_verify(packed, base64.b64decode(envelope["tag"]))
-        return GCM, json.loads(raw)
-    return ECB, json.loads(unpad(_ecb().decrypt(packed), AES.block_size))
+    try:
+        envelope = json.loads(data)
+        packed = base64.b64decode(envelope["pack"])
+        if "tag" in envelope:
+            raw = _gcm().decrypt_and_verify(packed, base64.b64decode(envelope["tag"]))
+            return GCM, json.loads(raw)
+        return ECB, json.loads(unpad(_ecb().decrypt(packed), AES.block_size))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class FakeSocket:
