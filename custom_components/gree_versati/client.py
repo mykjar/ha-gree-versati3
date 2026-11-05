@@ -7,8 +7,8 @@ import base64
 import json
 import logging
 import socket
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -31,6 +31,38 @@ class GreeVersatiClientError(HomeAssistantError):
     """Raised when protocol communication with the device fails."""
 
 
+class DatagramSocket(Protocol):
+    """One request's UDP socket: the client's only door to the network."""
+
+    async def sendto(self, data: bytes, address: tuple[str, int]) -> None:
+        """Send one datagram to ``address``."""
+
+    async def recvfrom(self) -> tuple[bytes, tuple[str, int]]:
+        """Wait for the next datagram from anyone; return it and its sender."""
+
+    def close(self) -> None:
+        """Release the socket."""
+
+
+class _UdpSocket:
+    """A real, non-blocking IPv4 UDP socket."""
+
+    def __init__(self) -> None:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setblocking(False)
+
+    async def sendto(self, data: bytes, address: tuple[str, int]) -> None:
+        await asyncio.get_running_loop().sock_sendto(self._sock, data, address)
+
+    async def recvfrom(self) -> tuple[bytes, tuple[str, int]]:
+        return await asyncio.get_running_loop().sock_recvfrom(
+            self._sock, DEFAULT_MAX_DATAGRAM_BYTES
+        )
+
+    def close(self) -> None:
+        self._sock.close()
+
+
 class GreeVersatiProtocolClient:
     """Minimal async UDP JSON client with AES pack support."""
 
@@ -42,6 +74,8 @@ class GreeVersatiProtocolClient:
         key: str,
         timeout: float,
         retries: int,
+        *,
+        socket_factory: Callable[[], DatagramSocket] = _UdpSocket,
     ) -> None:
         self._host = host
         self._port = port
@@ -50,6 +84,7 @@ class GreeVersatiProtocolClient:
         self._retries = retries
         self._key_bytes = self._validate_key(key)
         self._preferred_encryption: str | None = None
+        self._open_socket = socket_factory
 
     @staticmethod
     def validate_key_string(key: str) -> bool:
@@ -252,13 +287,12 @@ class GreeVersatiProtocolClient:
         last_error: Exception | None = None
 
         for _attempt in range(self._retries + 1):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setblocking(False)
+            sock = self._open_socket()
             try:
-                loop = asyncio.get_running_loop()
-                await loop.sock_sendto(sock, payload, (self._host, self._port))
-                response_bytes, _ = await asyncio.wait_for(
-                    loop.sock_recvfrom(sock, DEFAULT_MAX_DATAGRAM_BYTES),
+                pump_ip = await self._async_resolve_pump_ip()
+                await sock.sendto(payload, (pump_ip, self._port))
+                response_bytes = await asyncio.wait_for(
+                    self._async_receive_from(sock, pump_ip),
                     timeout=self._timeout,
                 )
                 return self._parse_response(response_bytes, encryption)
@@ -281,6 +315,27 @@ class GreeVersatiProtocolClient:
             f"No valid response from device after {self._retries + 1} attempts"
         ) from last_error
 
+    async def _async_resolve_pump_ip(self) -> str:
+        """Return the pump's IPv4 address: the configured host, resolved if a name."""
+        addresses = await asyncio.get_running_loop().getaddrinfo(
+            self._host, self._port, family=socket.AF_INET, type=socket.SOCK_DGRAM
+        )
+        return str(addresses[0][4][0])
+
+    async def _async_receive_from(self, sock: DatagramSocket, pump_ip: str) -> bytes:
+        """Return the next datagram from the pump, skipping anyone else's."""
+        while True:
+            data, (sender_ip, sender_port) = await sock.recvfrom()
+            if sender_ip == pump_ip:
+                return data
+            _LOGGER.debug(
+                "Ignoring datagram from %s:%s, waiting for device_id=%s at %s",
+                sender_ip,
+                sender_port,
+                self._device_id,
+                pump_ip,
+            )
+
     def _parse_response(self, response_bytes: bytes, encryption: str) -> dict[str, Any]:
         try:
             decoded = response_bytes.decode("utf-8", errors="ignore")
@@ -294,17 +349,17 @@ class GreeVersatiProtocolClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as err:
             raise GreeVersatiClientError("Failed to decode response JSON") from err
 
-        if isinstance(message, dict):
-            if "pack" in message and isinstance(message["pack"], str):
-                tag_value = message.get("tag")
-                return self._decrypt_pack(
-                    message["pack"],
-                    tag_value if isinstance(tag_value, str) else None,
-                    encryption,
-                )
-            return message
+        # Only what decrypts with the device key counts: a plaintext reply could
+        # come from anyone, so it is never pump data or a write's confirmation.
+        if not isinstance(message, dict) or not isinstance(message.get("pack"), str):
+            raise GreeVersatiClientError("Response has no encrypted payload")
 
-        raise GreeVersatiClientError("Unexpected response format")
+        tag_value = message.get("tag")
+        return self._decrypt_pack(
+            message["pack"],
+            tag_value if isinstance(tag_value, str) else None,
+            encryption,
+        )
 
     @staticmethod
     def _extract_values(payload: dict[str, Any]) -> dict[str, Any]:
