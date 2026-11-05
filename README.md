@@ -109,14 +109,14 @@ In the simulated house, with forecasts that are wrong in realistic ways, the roo
 | Status | Meaning |
 | --- | --- |
 | Active | In control; changes the setpoint when needed. |
-| Following the curve: indoor reading is old | The indoor sensor still shows a number but hasn't reported for 12 hours, as an average that doesn't change may not. Control carries on with the curve and the learned offset, without room correction, and learning waits until the sensor reports again. |
+| Following the curve: indoor reading is old | The indoor sensor shows a number but hasn't reported for 12 hours, as an average that never changes may not. Control follows the curve and the learned offset, without room correction. Learning waits until the sensor reports again. |
 | Advisory only | Calculating; `Write to pump` is off. |
 | Waiting to change the setpoint | A change is due but waits for the 30-minute gap. |
 | Paused after a manual change | The setpoint was changed elsewhere; control waits. |
 | Paused | The thermostat is Off. |
 | Pump off, Pump not in a heating mode, Pump error, Pump unavailable | Nothing is written until the pump is heating normally again. |
 | Pump's own weather curve is on | W-depend is on, so the pump would ignore the setpoint. |
-| Sensor unavailable | The indoor or outdoor reading is missing, or the outdoor one has been silent for 12 hours. |
+| Sensor unavailable | The indoor or outdoor reading is missing, or the outdoor one hasn't reported for 12 hours. |
 | Setpoint change failed, Pump ignored the setpoint change | The last change didn't take; it is retried after 30 minutes. |
 
 #### Tuning

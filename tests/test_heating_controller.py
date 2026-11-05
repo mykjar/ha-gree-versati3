@@ -723,7 +723,7 @@ async def test_control_is_back_once_the_indoor_sensor_reports(
     assert state(hass, "climate", "floor_heating").attributes["current_temperature"] == 20.5
 
 
-async def test_old_outdoor_reading_holds(
+async def test_old_outdoor_reading_still_blocks_writing(
     hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
 ) -> None:
     entry = await setup(hass)

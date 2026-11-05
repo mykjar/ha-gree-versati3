@@ -34,10 +34,6 @@ class Status(StrEnum):
     WRITE_IGNORED = "write_ignored"
 
 
-# The statuses in which the controller sets the pump when a change is due.
-IN_CONTROL = frozenset({Status.ACTIVE, Status.INDOOR_OLD})
-
-
 @dataclass(frozen=True, kw_only=True)
 class CurveSettings:
     """Two-point heating curve, defined at a reference room temperature.
@@ -300,20 +296,14 @@ class HeatingCore:
         if outdoor is not None and inputs.indoor is not None:
             curve_flow = settings.curve.flow(outdoor, state.room_target)
             lowered = curve_flow - inputs.sun_cut
-            if inputs.indoor_old:
-                # No room error to correct by or learn from: the curve and
-                # what was learned so far.
-                correction = _clamp(state.learned, settings.correction_limit)
-            else:
-                error = state.room_target - inputs.indoor
-                if self._learning_allowed(inputs, now, lowered, error):
-                    hours = min(elapsed, settings.max_learning_seconds) / 3600
-                    state.learned = _clamp(
-                        state.learned + settings.ki * error * hours, settings.learned_limit
-                    )
-                correction = _clamp(
-                    settings.kp * error + state.learned, settings.correction_limit
+            # An old indoor reading gives no room error to correct by.
+            error = 0.0 if inputs.indoor_old else state.room_target - inputs.indoor
+            if self._learning_allowed(inputs, now, lowered, error):
+                hours = min(elapsed, settings.max_learning_seconds) / 3600
+                state.learned = _clamp(
+                    state.learned + settings.ki * error * hours, settings.learned_limit
                 )
+            correction = _clamp(settings.kp * error + state.learned, settings.correction_limit)
             target = min(max(lowered + correction, settings.min_flow), settings.max_flow)
 
         suggested: int | None = None
@@ -321,7 +311,9 @@ class HeatingCore:
             suggested = next_setpoint(target, inputs.setpoint, settings)
 
         status = self._status(inputs, now, target, suggested)
-        write = suggested if status in IN_CONTROL and suggested != inputs.setpoint else None
+        write = suggested if status is Status.ACTIVE and suggested != inputs.setpoint else None
+        if status is Status.ACTIVE and inputs.indoor_old:
+            status = Status.INDOOR_OLD  # Still in control, on the curve alone.
         return Decision(
             status=status,
             outdoor=outdoor,
@@ -374,7 +366,7 @@ class HeatingCore:
             return False
         if state.override_until is not None or inputs.hold is not None:
             return False
-        if not inputs.space_heating:
+        if not inputs.space_heating or inputs.indoor_old:
             return False
         if (
             state.room_target_changed_at is not None
@@ -416,9 +408,8 @@ class HeatingCore:
             return Status.PUMP_UNAVAILABLE
         if not state.write_enabled:
             return Status.ADVISORY
-        in_control = Status.INDOOR_OLD if inputs.indoor_old else Status.ACTIVE
         if suggested == inputs.setpoint:
-            return in_control
+            return Status.ACTIVE
         if (
             state.last_attempt_at is not None
             and now - state.last_attempt_at < self.settings.write_interval_minutes * 60
@@ -428,4 +419,4 @@ class HeatingCore:
             if state.last_write_ignored:
                 return Status.WRITE_IGNORED
             return Status.RATE_LIMITED
-        return in_control
+        return Status.ACTIVE

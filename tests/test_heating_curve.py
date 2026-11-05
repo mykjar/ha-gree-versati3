@@ -380,6 +380,15 @@ def test_old_indoor_reading_follows_the_curve_and_learned_offset() -> None:
     assert decision.target_flow == pytest.approx(28.71, abs=0.01)
 
 
+def test_old_indoor_reading_still_lowers_the_curve_for_sun() -> None:
+    core = make_core(write_enabled=True, learned=1.0)
+
+    # The sun cut comes from the forecast, not the room, so it still applies.
+    decision = core.step(reading(outdoor=-10, indoor_old=True, sun_cut=1.5))
+
+    assert decision.target_flow == pytest.approx(27.21, abs=0.01)
+
+
 def test_old_indoor_reading_has_its_own_status_and_still_writes() -> None:
     core = make_core(write_enabled=True)
 

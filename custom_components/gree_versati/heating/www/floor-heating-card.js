@@ -19,10 +19,10 @@ const DOMAIN = "gree_versati";
 const CARD_TYPE = "gree-versati-floor-heating-card";
 const THERMOSTAT_KEY = "floor_heating";
 
-// Lines on the water graph: [domain, translation key, label]. They are looked
-// up on the thermostat's device, so renamed entity IDs don't matter. The
-// status isn't a number, so the graph draws it as a timeline under the
-// water, with the readable labels from the integration's translations.
+// What the water graph shows: [domain, translation key, label]. Entities are
+// looked up on the thermostat's device, so renamed entity IDs don't matter.
+// The status isn't a number, so the graph draws it as a timeline under the
+// water lines, with the readable labels from the integration's translations.
 const WATER_LINES = [
   ["sensor", "heating_target_water_temperature", "Controller target"],
   ["sensor", "heating_curve_water_temperature", "Curve only"],
