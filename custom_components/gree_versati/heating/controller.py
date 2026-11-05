@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Mapping
@@ -49,6 +50,7 @@ from .const import (
     CONF_WEATHER_ENTITY,
     FORECAST_MAX_AGE,
     FORECAST_REFRESH,
+    FORECAST_TIMEOUT,
     LIVE_OPTIONS,
     STALE_AFTER,
     STORAGE_VERSION,
@@ -224,12 +226,12 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         self, outdoor: float | None, now: float
     ) -> tuple[float | None, float]:
         """Look-ahead outdoor temperature and sun cut; (None, 0) without a forecast."""
-        if self.weather_entity_id is None or outdoor is None:
+        settings = self.core.settings
+        if self.weather_entity_id is None or outdoor is None or not settings.uses_forecast:
             return None, 0.0
         forecast = await self._async_forecast()
         if not forecast:
             return None, 0.0
-        settings = self.core.settings
         ahead = lookahead_outdoor(outdoor, forecast, now, settings.lookahead_hours)
         sun_cut = 0.0
         if settings.sun_cut_max > 0:
@@ -272,15 +274,17 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         return self._forecast
 
     async def _async_fetch_forecast(self, now: datetime) -> None:
+        timeout = asyncio.timeout(FORECAST_TIMEOUT.total_seconds())
         try:
-            response = await self.hass.services.async_call(
-                "weather",
-                "get_forecasts",
-                {"type": "hourly"},
-                target={"entity_id": self.weather_entity_id},
-                blocking=True,
-                return_response=True,
-            )
+            async with timeout:
+                response = await self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    {"type": "hourly"},
+                    target={"entity_id": self.weather_entity_id},
+                    blocking=True,
+                    return_response=True,
+                )
             items = response[self.weather_entity_id]["forecast"]
             forecast = self._parse_forecast(items)
         except Exception as err:  # A forecast must never stop floor heating control.
@@ -288,7 +292,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
                 _LOGGER.warning(
                     "No hourly forecast from %s; floor heating carries on without it: %s",
                     self.weather_entity_id,
-                    err,
+                    f"no answer within {FORECAST_TIMEOUT.total_seconds():.0f} s"
+                    if timeout.expired()
+                    else err,
                 )
             self._forecast_failing = True
             return
@@ -447,7 +453,11 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         if not changed <= LIVE_OPTIONS:
             return False
         self._options = dict(options)
+        used_forecast = self.core.settings.uses_forecast
         self.core.settings = settings_from_options(options)
+        if self.core.settings.uses_forecast and not used_forecast:
+            # Back in use: ask now rather than at the next half-hourly refresh.
+            self._forecast_tried = None
         self.async_update_listeners()
         self.hass.async_create_task(self.async_request_refresh())
         return True

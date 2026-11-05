@@ -83,7 +83,7 @@ A concrete floor reacts hours late, so with a weather forecast chosen the contro
 - **Look-ahead:** the curve uses the average of the outdoor temperature now and the forecast for each half hour of the next 4 hours.
 - **Sun cut:** when the forecast shows sun 2–6 hours ahead, the water is lowered by up to 2 °C, so the floor isn't full of heat when the sun arrives. It uses the sun's real position at your home.
 
-The forecast is fetched every 30 minutes. Without a usable forecast the controller works exactly as it would without one, and says so once in the log. `Look ahead` and `Sun cut` under `Configure` tune both; 0 turns each off.
+The forecast is fetched every 30 minutes, and only while `Look ahead` or `Sun cut` uses it. A weather integration that hasn't answered within 30 s is given up on until the next fetch, so it can't hold up control. Without a usable forecast the controller works exactly as it would without one, and says so once in the log. `Look ahead` and `Sun cut` under `Configure` tune both; 0 turns each off.
 
 In the simulated house, with forecasts that are wrong in realistic ways, the room stayed within ±0.5 °C noticeably more often: about 83 % → 93 % on sunny autumn days, with 70 % less overheating, and 95 % → 99 % in a winter fortnight. That held even when 30 % of days were forecast wrong. No run was colder, and energy use was the same: this is about comfort, not savings.
 

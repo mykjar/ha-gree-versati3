@@ -55,6 +55,9 @@ BUSY_FLOW_DIFFERENCE: Final = 8.0
 # controller carries on without it.
 FORECAST_REFRESH: Final = timedelta(minutes=30)
 FORECAST_MAX_AGE: Final = timedelta(hours=3)
+# A weather integration that hasn't answered by then is given up on until the
+# next refresh, so it can't hold up the control step.
+FORECAST_TIMEOUT: Final = timedelta(seconds=30)
 # Suggested in the settings form, as Home Assistant sets it up out of the box.
 DEFAULT_WEATHER_ENTITY: Final = "weather.forecast_home"
 
