@@ -87,6 +87,11 @@ class ControlSettings:
     sun_cut_max: float = 2.0
     sun_window_hours: tuple[float, float] = (2.0, 6.0)
 
+    @property
+    def uses_forecast(self) -> bool:
+        """Whether look-ahead or sun cut is on, and so needs a forecast."""
+        return self.lookahead_hours > 0 or self.sun_cut_max > 0
+
 
 @dataclass(kw_only=True)
 class ControlState:
