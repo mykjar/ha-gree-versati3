@@ -29,6 +29,7 @@ KEY = "1234567890abcdef"
 
 Address = tuple[str, int]
 Datagram = tuple[bytes, Address]
+Request = tuple[str, dict[str, Any]]
 
 
 def _b64(data: bytes) -> str:
@@ -61,6 +62,9 @@ def seal(payload: dict[str, Any], *, encryption: str = ECB) -> bytes:
 def plaintext(payload: dict[str, Any]) -> bytes:
     """Return a datagram carrying ``payload`` with no encryption at all."""
     return json.dumps(payload).encode()
+
+
+UNREADABLE_REPLY: dict[str, Any] = {"t": "res", "mac": DEVICE_ID, "r": 400}
 
 
 def status_reply(values: dict[str, Any]) -> dict[str, Any]:
@@ -110,8 +114,16 @@ def not_base64(datagram: bytes) -> bytes:
 class WirePump:
     """Answers the client's requests like a pump at ``ip`` would.
 
+    ``received`` logs every request sent to the pump, as its encryption and
+    decrypted body, whether or not the pump could read it.
+
     Scenario knobs:
     - ``silent``: the pump never answers.
+    - ``understands``: which request bodies the pump answers; it silently
+      ignores the rest, like firmware that doesn't know a message format.
+    - ``answers_empty``: which request bodies the pump answers with no values.
+    - ``answers_unreadable``: the pump answers a request it can't decrypt with
+      an error in its own encryption, rather than ignoring it.
     - ``write_status``: the ``r`` code the pump answers writes with.
     - ``ahead``: datagrams that reach the client ahead of every reply, as if
       someone else on the network raced the pump.
@@ -130,10 +142,14 @@ class WirePump:
         self.values: dict[str, Any] = dict(values or {})
         self.ip = ip
         self.silent = False
+        self.understands: Callable[[dict[str, Any]], bool] = lambda request: True
+        self.answers_empty: Callable[[dict[str, Any]], bool] = lambda request: False
+        self.answers_unreadable = False
         self.write_status = 200
         self.ahead: list[Datagram] = []
         self.chatter: Datagram | None = None
         self.tamper: Callable[[bytes], bytes] | None = None
+        self.received: list[Request] = []
 
     @property
     def address(self) -> Address:
@@ -145,27 +161,24 @@ class WirePump:
     def datagrams_after_send(self, data: bytes, address: Address) -> list[Datagram]:
         """Return what reaches the client after it sends ``data`` to ``address``."""
         datagrams = list(self.ahead)
-        request = self._open(data) if address == self.address else None
-        if request is not None and not self.silent:
+        if address != self.address:
+            return datagrams
+        sniffed = _sniff(data)
+        if sniffed is not None:
+            self.received.append(sniffed)
+        if self.silent:
+            return datagrams
+        # Like a real pump, it reads only its own encryption.
+        encryption, request = sniffed if sniffed is not None else (None, None)
+        if encryption != self.encryption:
+            if self.answers_unreadable:
+                datagrams.append((seal(UNREADABLE_REPLY, encryption=self.encryption), self.address))
+        elif request is not None and self.understands(request):
             reply = seal(self._respond(request), encryption=self.encryption)
             if self.tamper is not None:
                 reply = self.tamper(reply)
             datagrams.append((reply, self.address))
         return datagrams
-
-    def _open(self, data: bytes) -> dict[str, Any] | None:
-        """Decrypt a request; like a real pump, ignore what it can't read."""
-        try:
-            envelope = json.loads(data)
-            packed = base64.b64decode(envelope["pack"])
-            if self.encryption == GCM:
-                tag = base64.b64decode(envelope["tag"])
-                raw = _gcm().decrypt_and_verify(packed, tag)
-            else:
-                raw = unpad(_ecb().decrypt(packed), AES.block_size)
-            return json.loads(raw)
-        except (KeyError, TypeError, ValueError):
-            return None
 
     def _respond(self, request: dict[str, Any]) -> dict[str, Any]:
         if request.get("t") == "cmd":
@@ -174,7 +187,22 @@ class WirePump:
                 self.values.update(params)
             return write_reply(params, self.write_status)
         keys = request.get("cols") or request.get("opt") or []
+        if self.answers_empty(request):
+            keys = []
         return status_reply({key: self.values[key] for key in keys if key in self.values})
+
+
+def _sniff(data: bytes) -> Request | None:
+    """Decrypt a request with whichever encryption the client sealed it in."""
+    try:
+        envelope = json.loads(data)
+        packed = base64.b64decode(envelope["pack"])
+        if "tag" in envelope:
+            raw = _gcm().decrypt_and_verify(packed, base64.b64decode(envelope["tag"]))
+            return GCM, json.loads(raw)
+        return ECB, json.loads(unpad(_ecb().decrypt(packed), AES.block_size))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class FakeSocket:

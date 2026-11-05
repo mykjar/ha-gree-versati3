@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -46,6 +47,25 @@ def make_client(
         retries=retries,
         socket_factory=pump.socket,
     )
+
+
+Operation = Callable[[GreeVersatiProtocolClient], Awaitable[Any]]
+
+
+async def read(client: GreeVersatiProtocolClient) -> Any:
+    return await client.async_get(["HeWatOutTemSet", "Pow"])
+
+
+async def write(client: GreeVersatiProtocolClient) -> Any:
+    return await client.async_set({"HeWatOutTemSet": 28})
+
+
+READ_AND_WRITE = pytest.mark.parametrize("operation", [read, write], ids=["read", "write"])
+
+
+def sent(pump: WirePump) -> list[tuple[str, tuple[str, ...]]]:
+    """Each request the pump received, as its encryption and the fields it carried."""
+    return [(encryption, tuple(sorted(body))) for encryption, body in pump.received]
 
 
 def test_validate_key_string_accepts_16_bytes() -> None:
@@ -117,11 +137,12 @@ async def test_writes_values_to_the_pump(encryption: str) -> None:
     assert pump.values["HeWatOutTemSet"] == 28
 
 
-async def test_a_write_the_pump_rejects_raises() -> None:
+async def test_a_write_the_pump_rejects_raises_the_pumps_error() -> None:
     pump = WirePump(values=PUMP_VALUES)
     pump.write_status = 400
 
-    with pytest.raises(GreeVersatiClientError):
+    # Not the silence of the encryption the pump doesn't speak, tried after.
+    with pytest.raises(GreeVersatiClientError, match="error code: 400"):
         await make_client(pump).async_set({"HeWatOutTemSet": 28})
 
 
@@ -199,3 +220,97 @@ async def test_a_reply_that_fails_to_decrypt_does_not_confirm_a_write(
 
     with pytest.raises(GreeVersatiClientError):
         await make_client(pump).async_set({"HeWatOutTemSet": 28})
+
+
+@pytest.mark.parametrize(
+    ("operation", "combinations"),
+    [(read, 2 * 4), (write, 2 * 3)],
+    ids=["read", "write"],
+)
+async def test_a_pump_that_never_answers_gets_each_combination_once(
+    operation: Operation, combinations: int
+) -> None:
+    pump = WirePump(values=PUMP_VALUES)
+    pump.silent = True
+
+    with pytest.raises(GreeVersatiClientError):
+        await operation(make_client(pump, retries=2))
+
+    # Every request to a silent pump waits out one timeout: with the defaults
+    # that's 8 x 5 s = 40 s for a read, rather than 3 tries of each (2 minutes).
+    assert len(sent(pump)) == combinations
+    assert len(set(sent(pump))) == combinations
+
+
+# The last format of each kind is the only one without ``mac`` (reads) or the
+# only one with ``uid`` (writes): a pump that knows nothing else needs every
+# fallback the client has.
+ONLY_LAST_FORMAT = pytest.mark.parametrize(
+    ("operation", "understands"),
+    [(read, lambda request: "mac" not in request), (write, lambda request: "uid" in request)],
+    ids=["read", "write"],
+)
+
+
+@ONLY_LAST_FORMAT
+async def test_the_combination_that_worked_is_tried_first_from_then_on(
+    operation: Operation, understands: Callable[[dict[str, Any]], bool]
+) -> None:
+    pump = WirePump(encryption=GCM, values=PUMP_VALUES)
+    pump.understands = understands
+    client = make_client(pump)
+    await operation(client)
+    answered = sent(pump)[-1]
+    pump.received.clear()
+
+    await operation(client)
+
+    assert answered[0] == GCM
+    assert sent(pump) == [answered]
+
+
+@READ_AND_WRITE
+async def test_a_pump_gone_silent_fails_within_one_round_of_attempts(
+    operation: Operation,
+) -> None:
+    pump = WirePump(values=PUMP_VALUES)
+    client = make_client(pump, retries=2)
+    await operation(client)
+    answered = sent(pump)[-1]
+    pump.received.clear()
+    pump.silent = True
+
+    with pytest.raises(GreeVersatiClientError):
+        await operation(client)
+
+    # The working combination, 1 try + 2 retries: 3 x 5 s = 15 s with the defaults.
+    assert sent(pump) == [answered] * 3
+
+
+async def test_a_reply_with_no_values_moves_on_to_the_other_formats() -> None:
+    pump = WirePump(values=PUMP_VALUES)
+    client = make_client(pump, retries=2)
+    await read(client)
+    pump.answers_empty = lambda request: "cols" in request
+
+    values = await read(client)
+
+    assert values == {"HeWatOutTemSet": 30, "Pow": 1}
+
+
+@READ_AND_WRITE
+async def test_a_reply_that_wont_decrypt_moves_on_to_the_other_encryption(
+    operation: Operation,
+) -> None:
+    pump = WirePump(values=PUMP_VALUES)
+    client = make_client(pump, retries=2)
+    await operation(client)
+    # After a firmware update the pump speaks GCM, and answers what it can't
+    # read with an error the client can't decrypt.
+    pump.encryption = GCM
+    pump.answers_unreadable = True
+    pump.received.clear()
+
+    await operation(client)
+
+    assert sent(pump)[-1][0] == GCM

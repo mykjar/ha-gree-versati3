@@ -8,7 +8,7 @@ import json
 import logging
 import socket
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, NamedTuple, Protocol
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -28,9 +28,22 @@ _LOGGER = logging.getLogger(__name__)
 
 Address = tuple[str, int]
 
+_Operation = Literal["read", "write"]
+
+
+class _Combination(NamedTuple):
+    """One way of asking the pump: an encryption and a request format."""
+
+    encryption: str
+    format_index: int
+
 
 class GreeVersatiClientError(HomeAssistantError):
     """Raised when protocol communication with the device fails."""
+
+
+class _NoReply(GreeVersatiClientError):
+    """The pump never answered: every attempt timed out or failed to send."""
 
 
 class DatagramSocket(Protocol):
@@ -85,7 +98,8 @@ class GreeVersatiProtocolClient:
         self._timeout = timeout
         self._retries = retries
         self._key_bytes = self._validate_key(key)
-        self._preferred_encryption: str | None = None
+        # The encryption and request format each operation last worked with.
+        self._working: dict[_Operation, _Combination] = {}
         self._open_socket = socket_factory
 
     @staticmethod
@@ -115,42 +129,20 @@ class GreeVersatiProtocolClient:
 
         # Request format mirrors known working client behavior for Versati:
         # prefer `cols` + `mac`, then fallback to `opt` variants for compatibility.
-        attempts: tuple[dict[str, Any], ...] = (
+        formats: tuple[dict[str, Any], ...] = (
             {"t": "status", "mac": self._device_id, "cols": keys},
             {"t": "status", "uid": 0, "mac": self._device_id, "cols": keys},
             {"t": "status", "mac": self._device_id, "opt": keys},
             {"t": "status", "uid": 0, "opt": keys},
         )
 
-        last_error: GreeVersatiClientError | None = None
-        for encryption in self._candidate_encryptions():
-            for payload in attempts:
-                try:
-                    request = self._build_outer_message(payload, encryption)
-                    response = await self._async_request(request, encryption)
-                    values = self._extract_values(response)
-                    if values:
-                        _LOGGER.debug(
-                            "Received values using encryption=%s from device_id=%s",
-                            encryption,
-                            self._device_id,
-                        )
-                        self._preferred_encryption = encryption
-                        return {key: values[key] for key in keys if key in values}
-                except GreeVersatiClientError as err:
-                    _LOGGER.debug(
-                        "Get attempt failed for device_id=%s encryption=%s payload_keys=%s: %s",
-                        self._device_id,
-                        encryption,
-                        list(payload.keys()),
-                        err,
-                    )
-                    last_error = err
+        def requested_values(reply: dict[str, Any]) -> dict[str, Any]:
+            values = self._extract_values(reply)
+            if not values:
+                raise GreeVersatiClientError("Device reply held no values")
+            return {key: values[key] for key in keys if key in values}
 
-        if last_error is not None:
-            raise last_error
-
-        raise GreeVersatiClientError("Device response did not include requested values")
+        return await self._async_exchange("read", formats, requested_values)
 
     async def async_set(self, params: dict[str, Any]) -> None:
         """Set one or more parameters on the device."""
@@ -165,59 +157,99 @@ class GreeVersatiProtocolClient:
         )
 
         keys = list(params.keys())
-        payloads: tuple[dict[str, Any], ...] = (
-            {
-                "t": "cmd",
-                "opt": keys,
-                "p": [params[key] for key in keys],
-            },
-            {
-                "t": "cmd",
-                "mac": self._device_id,
-                "opt": keys,
-                "p": [params[key] for key in keys],
-            },
-            {
-                "t": "cmd",
-                "uid": 0,
-                "mac": self._device_id,
-                "opt": keys,
-                "p": [params[key] for key in keys],
-            },
+        values = [params[key] for key in keys]
+        formats: tuple[dict[str, Any], ...] = (
+            {"t": "cmd", "opt": keys, "p": values},
+            {"t": "cmd", "mac": self._device_id, "opt": keys, "p": values},
+            {"t": "cmd", "uid": 0, "mac": self._device_id, "opt": keys, "p": values},
         )
-        last_error: GreeVersatiClientError | None = None
-        for encryption in self._candidate_encryptions():
-            for payload in payloads:
-                try:
-                    request = self._build_outer_message(payload, encryption)
-                    response = await self._async_request(request, encryption)
-                    status = response.get("r")
-                    if isinstance(status, int) and status not in (0, 200):
-                        raise GreeVersatiClientError(
-                            f"Device returned error code: {status}"
-                        )
-                    self._preferred_encryption = encryption
-                    return
-                except GreeVersatiClientError as err:
-                    _LOGGER.debug(
-                        "Set attempt failed for device_id=%s encryption=%s payload_keys=%s: %s",
-                        self._device_id,
-                        encryption,
-                        list(payload.keys()),
-                        err,
-                    )
-                    last_error = err
 
-        if last_error is not None:
-            raise last_error
-        raise GreeVersatiClientError("Failed to set parameters")
+        def confirm(reply: dict[str, Any]) -> None:
+            status = reply.get("r")
+            if isinstance(status, int) and status not in (0, 200):
+                raise GreeVersatiClientError(f"Device returned error code: {status}")
 
-    def _candidate_encryptions(self) -> tuple[str, ...]:
-        if self._preferred_encryption == ENCRYPTION_GCM:
-            return (ENCRYPTION_GCM, ENCRYPTION_ECB)
-        if self._preferred_encryption == ENCRYPTION_ECB:
-            return (ENCRYPTION_ECB, ENCRYPTION_GCM)
-        return (ENCRYPTION_ECB, ENCRYPTION_GCM)
+        await self._async_exchange("write", formats, confirm)
+
+    async def _async_exchange[T](
+        self,
+        operation: _Operation,
+        formats: Sequence[dict[str, Any]],
+        accept: Callable[[dict[str, Any]], T],
+    ) -> T:
+        """Send ``formats`` until ``accept`` takes a reply; return what it returns.
+
+        ``accept`` raises GreeVersatiClientError for a reply it can't use. The
+        combination of encryption and format that worked is tried first next time.
+        """
+        working = self._working.get(operation)
+        error: GreeVersatiClientError | None = None
+        for combination in self._combinations(operation, len(formats)):
+            is_working = combination == working
+            payload = formats[combination.format_index]
+            # Only a combination the pump has answered earns retries: while
+            # discovering, a pump may silently ignore what it doesn't understand.
+            attempts = self._retries + 1 if is_working else 1
+            try:
+                request = self._build_outer_message(payload, combination.encryption)
+                response = await self._async_request(
+                    request, combination.encryption, attempts=attempts
+                )
+                result = accept(response)
+            except GreeVersatiClientError as err:
+                silent = isinstance(err, _NoReply)
+                # The pump has gone silent: other combinations won't wake it.
+                # One that answered may still understand another combination.
+                if silent and is_working:
+                    raise
+                _LOGGER.debug(
+                    "%s attempt failed for device_id=%s encryption=%s payload_keys=%s: %s",
+                    operation,
+                    self._device_id,
+                    combination.encryption,
+                    list(payload),
+                    err,
+                )
+                # What the pump said beats the silence of combinations it ignores.
+                if error is None or not silent:
+                    error = err
+                continue
+            if not is_working:
+                _LOGGER.debug(
+                    "device_id=%s answers %s with encryption=%s payload_keys=%s",
+                    self._device_id,
+                    operation,
+                    combination.encryption,
+                    list(payload),
+                )
+                self._working[operation] = combination
+            return result
+
+        if error is None:
+            raise GreeVersatiClientError(f"No request formats to {operation} with")
+        raise error
+
+    def _combinations(
+        self, operation: _Operation, format_count: int
+    ) -> list[_Combination]:
+        """Every encryption and format, with what worked before first."""
+        working = self._working.get(operation)
+        # The pump speaks one encryption: lead with the one that worked, for
+        # this operation or else the other.
+        lead = working or next(iter(self._working.values()), None)
+        encryptions = (ENCRYPTION_ECB, ENCRYPTION_GCM)
+        if lead is not None and lead.encryption == ENCRYPTION_GCM:
+            encryptions = (ENCRYPTION_GCM, ENCRYPTION_ECB)
+
+        combinations = [
+            _Combination(encryption, index)
+            for encryption in encryptions
+            for index in range(format_count)
+        ]
+        if working is not None:
+            combinations.remove(working)
+            combinations.insert(0, working)
+        return combinations
 
     def _build_outer_message(self, pack_payload: dict[str, Any], encryption: str) -> str:
         encrypted_pack, tag = self._encrypt_pack(pack_payload, encryption)
@@ -284,11 +316,18 @@ class GreeVersatiProtocolClient:
                 "Failed to decrypt and parse response pack"
             ) from err
 
-    async def _async_request(self, message: str, encryption: str) -> dict[str, Any]:
+    async def _async_request(
+        self, message: str, encryption: str, *, attempts: int
+    ) -> dict[str, Any]:
+        """Send ``message`` until the pump answers; return its decrypted reply.
+
+        Raises ``_NoReply`` once ``attempts`` go unanswered, and gives up at once
+        on a reply that won't decrypt: asking again would get the same answer.
+        """
         payload = message.encode("utf-8")
         last_error: Exception | None = None
 
-        for _attempt in range(self._retries + 1):
+        for _attempt in range(attempts):
             sock = self._open_socket()
             try:
                 device_ip = await self._async_resolve_device_ip()
@@ -297,12 +336,11 @@ class GreeVersatiProtocolClient:
                     self._async_receive_from(sock, device_ip),
                     timeout=self._timeout,
                 )
-                return self._parse_response(response_bytes, encryption)
-            except (asyncio.TimeoutError, OSError, GreeVersatiClientError) as err:
+            except (asyncio.TimeoutError, OSError) as err:
                 _LOGGER.debug(
                     "UDP attempt %s/%s failed for host=%s port=%s encryption=%s: %r (%s)",
                     _attempt + 1,
-                    self._retries + 1,
+                    attempts,
                     self._host,
                     self._port,
                     encryption,
@@ -310,11 +348,13 @@ class GreeVersatiProtocolClient:
                     type(err).__name__,
                 )
                 last_error = err
+                continue
             finally:
                 sock.close()
+            return self._parse_response(response_bytes, encryption)
 
-        raise GreeVersatiClientError(
-            f"No valid response from device after {self._retries + 1} attempts"
+        raise _NoReply(
+            f"No reply from device after {attempts} attempts"
         ) from last_error
 
     async def _async_resolve_device_ip(self) -> str:
