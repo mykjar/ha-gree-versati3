@@ -177,10 +177,11 @@ def test_writes_are_rate_limited() -> None:
         Status.W_DEPEND_ON,
     ],
 )
-def test_pump_holds_block_writes(hold: Status) -> None:
+@pytest.mark.parametrize("indoor_old", [False, True])
+def test_pump_holds_block_writes(hold: Status, indoor_old: bool) -> None:
     core = make_core(write_enabled=True)
 
-    decision = core.step(reading(outdoor=-10, hold=hold))
+    decision = core.step(reading(outdoor=-10, hold=hold, indoor_old=indoor_old))
 
     assert decision.status is hold
     assert decision.write is None
@@ -364,6 +365,94 @@ def test_learning_can_be_switched_off_and_reset() -> None:
 
     core.reset_learning()
     assert core.state.learned == 0
+
+
+# An old indoor reading
+
+
+def test_old_indoor_reading_follows_the_curve_and_learned_offset() -> None:
+    core = make_core(write_enabled=True, learned=1.0)
+
+    # The room reads 2 °C cold, but the reading is too old to correct for:
+    # curve 27.71 °C at -10 °C outdoors, plus the learned 1 °C.
+    decision = core.step(reading(outdoor=-10, indoor=19.0, indoor_old=True))
+
+    assert decision.target_flow == pytest.approx(28.71, abs=0.01)
+
+
+def test_old_indoor_reading_still_lowers_the_curve_for_sun() -> None:
+    core = make_core(write_enabled=True, learned=1.0)
+
+    # The sun cut comes from the forecast, not the room, so it still applies.
+    decision = core.step(reading(outdoor=-10, indoor_old=True, sun_cut=1.5))
+
+    assert decision.target_flow == pytest.approx(27.21, abs=0.01)
+
+
+def test_old_indoor_reading_has_its_own_status_and_still_writes() -> None:
+    core = make_core(write_enabled=True)
+
+    decision = core.step(reading(outdoor=-10, indoor_old=True))
+
+    assert decision.status is Status.INDOOR_OLD
+    assert decision.write == 26
+
+
+def test_old_indoor_reading_in_advisory_mode_only_advises() -> None:
+    core = make_core()
+
+    decision = core.step(reading(outdoor=-10, indoor_old=True))
+
+    assert decision.status is Status.ADVISORY
+    assert decision.suggested_setpoint == 26
+    assert decision.write is None
+
+
+def test_old_indoor_reading_keeps_the_rate_limit() -> None:
+    core = make_core(write_enabled=True)
+    core.step(reading(outdoor=-10, indoor_old=True))
+    core.record_write(26, 25, NOW)
+
+    decision = core.step(reading(NOW + 5 * MINUTE, outdoor=-10, setpoint=26, indoor_old=True))
+    assert decision.status is Status.RATE_LIMITED
+    assert decision.write is None
+
+    decision = core.step(reading(NOW + 30 * MINUTE, outdoor=-10, setpoint=26, indoor_old=True))
+    assert decision.status is Status.INDOOR_OLD
+    assert decision.write == 27
+
+
+def test_old_indoor_reading_stays_within_the_water_limits() -> None:
+    core = make_core(write_enabled=True, learned=3.0)
+
+    # Curve 30 °C in hard frost, plus the learned 3 °C, but the floor's limit is 30.
+    decision = core.step(reading(outdoor=-25, setpoint=30, indoor_old=True))
+
+    assert decision.target_flow == 30
+    assert decision.write is None
+
+
+def test_no_learning_while_the_indoor_reading_is_old() -> None:
+    core = make_core(write_enabled=True, learned=1.0)
+    core.step(reading(indoor=20.0, indoor_old=True))
+
+    decision = core.step(reading(NOW + 5 * MINUTE, indoor=20.0, indoor_old=True))
+
+    assert decision.learned == 1.0
+
+
+def test_fresh_indoor_reading_brings_back_room_correction_and_learning() -> None:
+    core = make_core(write_enabled=True)
+    core.step(reading(indoor=20.5, indoor_old=True))
+    core.step(reading(NOW + 5 * MINUTE, indoor=20.5, indoor_old=True))
+
+    decision = core.step(reading(NOW + 10 * MINUTE, indoor=20.5))
+
+    # 0 °C outside: curve 25.43 °C, plus 2.5 × 0.5 °C because the room is cold,
+    # and learning picks up again from the last 5 minutes.
+    assert decision.status is Status.ACTIVE
+    assert decision.learned == pytest.approx(0.1 * 0.5 * 5 / 60)
+    assert decision.target_flow == pytest.approx(26.68, abs=0.01)
 
 
 # State

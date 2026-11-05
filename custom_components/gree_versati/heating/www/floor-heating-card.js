@@ -3,9 +3,10 @@
  *
  * Shows what floor heating control does, or would do in advisory mode: the
  * controller's water target against the pump's setpoint and the measured
- * water, and the room against its target and the outdoor temperature. It is
- * built from Home Assistant's own history graph cards and finds the
- * controller's entities through the thermostat, so that is all it needs:
+ * water, with the controller's status, and the room against its target and
+ * the outdoor temperature. It is built from Home Assistant's own history
+ * graph cards and finds the controller's entities through the thermostat, so
+ * that is all it needs:
  *
  *   type: custom:gree-versati-floor-heating-card
  *   entity: climate.gree_versati_<device_id>_floor_heating
@@ -18,13 +19,16 @@ const DOMAIN = "gree_versati";
 const CARD_TYPE = "gree-versati-floor-heating-card";
 const THERMOSTAT_KEY = "floor_heating";
 
-// Lines on the water graph: [domain, translation key, label]. They are looked
-// up on the thermostat's device, so renamed entity IDs don't matter.
+// What the water graph shows: [domain, translation key, label]. Entities are
+// looked up on the thermostat's device, so renamed entity IDs don't matter.
+// The status isn't a number, so the graph draws it as a timeline under the
+// water lines, with the readable labels from the integration's translations.
 const WATER_LINES = [
   ["sensor", "heating_target_water_temperature", "Controller target"],
   ["sensor", "heating_curve_water_temperature", "Curve only"],
   ["number", "he_wat_out_tem_set", "Pump setpoint"],
   ["sensor", "all_out_wat_tem", "Water out (measured)"],
+  ["sensor", "heating_status", "Controller status"],
 ];
 const OUTDOOR_LINES = [
   ["sensor", "heating_outdoor_temperature", "Outdoor used by the curve"],

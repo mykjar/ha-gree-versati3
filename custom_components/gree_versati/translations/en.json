@@ -184,6 +184,7 @@
         "name": "Floor heating status",
         "state": {
           "active": "Active",
+          "indoor_old": "Following the curve: indoor reading is old",
           "advisory": "Advisory only",
           "paused": "Paused",
           "manual_override": "Paused after a manual change",

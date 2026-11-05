@@ -167,13 +167,17 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         pump = self._pump_data
         now = dt_util.utcnow().timestamp()
         setpoint = _as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None
+        # An old outdoor reading counts as missing, as the curve can't do
+        # without it. An old indoor one only stops the room correction.
         outdoor = self.temperature(self.outdoor_entity_id)
+        indoor, indoor_old = self._reading(self.indoor_entity_id)
         outdoor_ahead, sun_cut = await self._async_forecast_inputs(outdoor, now)
         decision = self.core.step(
             Inputs(
                 now=now,
                 outdoor=outdoor,
-                indoor=self.temperature(self.indoor_entity_id),
+                indoor=indoor,
+                indoor_old=indoor_old,
                 setpoint=setpoint,
                 hold=pump_hold(pump),
                 space_heating=space_heating(pump),
@@ -334,19 +338,24 @@ class HeatingController(DataUpdateCoordinator[Decision]):
 
     def temperature(self, entity_id: str) -> float | None:
         """A sensor's temperature in °C, or None if it can't be trusted."""
+        value, old = self._reading(entity_id)
+        return None if old else value
+
+    def _reading(self, entity_id: str) -> tuple[float | None, bool]:
+        """A sensor's temperature in °C, if it has one, and whether it is old."""
         state = self.hass.states.get(entity_id)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return None
+            return None, False
         try:
             value = float(state.state)
         except ValueError:
-            return None
-        if not math.isfinite(value) or dt_util.utcnow() - state.last_reported > STALE_AFTER:
-            return None
+            return None, False
+        if not math.isfinite(value):
+            return None, False
         unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
         if unit in (UnitOfTemperature.FAHRENHEIT, UnitOfTemperature.KELVIN):
             value = TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
-        return value
+        return value, dt_util.utcnow() - state.last_reported > STALE_AFTER
 
     async def async_set_room_target(self, value: float) -> None:
         """Change the room temperature to aim for."""

@@ -36,6 +36,7 @@ from homeassistant.const import (
     STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
 )
 from homeassistant.core import (
     CoreState,
@@ -247,9 +248,12 @@ async def test_pump_state_is_reported(
     assert state(hass, "sensor", "heating_status").state == status
 
 
-async def test_missing_sensor_is_reported(hass: HomeAssistant, pump: FakePump) -> None:
+@pytest.mark.parametrize("indoor", [STATE_UNAVAILABLE, STATE_UNKNOWN, "not a number"])
+async def test_missing_sensor_is_reported(
+    hass: HomeAssistant, pump: FakePump, indoor: str
+) -> None:
     entry = await setup(hass)
-    hass.states.async_set(INDOOR, STATE_UNAVAILABLE)
+    hass.states.async_set(INDOOR, indoor)
 
     await poll(hass, entry)
 
@@ -662,6 +666,77 @@ async def test_resume_ends_a_manual_change_pause(
     freezer.tick(timedelta(minutes=25))
     await poll(hass, entry)
     assert pump.writes[-1] == {"HeWatOutTemSet": 24}
+
+
+# Old readings
+
+
+def _report(hass: HomeAssistant, sensor: str, value: str) -> None:
+    """The sensor reports a value; the same value again only refreshes it."""
+    hass.states.async_set(sensor, value, {"unit_of_measurement": "°C"})
+
+
+async def test_old_indoor_reading_keeps_heating_on_the_curve(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    controller(hass, entry).core.state.learned = 1.0
+    await _switch_writing(hass, True)
+    assert pump.writes == [{"HeWatOutTemSet": 26}]
+
+    # The room still reads 20.5 °C, but hasn't reported for 13 hours. The
+    # outdoor sensor has, and it is colder now.
+    freezer.tick(timedelta(hours=13))
+    _report(hass, OUTDOOR, "-10.0")
+    await poll(hass, entry)
+
+    # -10 °C outside: curve 27.71 °C plus the learned 1 °C, no room correction.
+    assert state(hass, "sensor", "heating_status").state == "indoor_old"
+    assert float(state(hass, "sensor", "heating_target_water_temperature").state) == (
+        pytest.approx(28.71, abs=0.01)
+    )
+    assert float(state(hass, "sensor", "heating_learned_offset").state) == 1.0
+    assert pump.writes[-1] == {"HeWatOutTemSet": 27}
+
+
+async def test_control_is_back_once_the_indoor_sensor_reports(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    await _switch_writing(hass, True)
+    freezer.tick(timedelta(hours=13))
+    _report(hass, OUTDOOR, "0.0")
+    await poll(hass, entry)
+    assert state(hass, "sensor", "heating_status").state == "indoor_old"
+
+    # The same 20.5 °C, reported again.
+    _report(hass, INDOOR, "20.5")
+    freezer.tick(timedelta(minutes=5))
+    await poll(hass, entry)
+
+    # 0 °C outside: curve 25.43 °C, plus 2.5 × 0.5 °C because the room is cold.
+    assert state(hass, "sensor", "heating_status").state == "active"
+    assert float(state(hass, "sensor", "heating_target_water_temperature").state) == (
+        pytest.approx(26.68, abs=0.01)
+    )
+    assert float(state(hass, "sensor", "heating_learned_offset").state) > 0
+    assert state(hass, "climate", "floor_heating").attributes["current_temperature"] == 20.5
+
+
+async def test_old_outdoor_reading_still_blocks_writing(
+    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await setup(hass)
+    await _switch_writing(hass, True)
+    assert pump.writes == [{"HeWatOutTemSet": 26}]
+
+    # The room has cooled and says so, but outdoors has been silent for 13 hours.
+    freezer.tick(timedelta(hours=13))
+    _report(hass, INDOOR, "19.0")
+    await poll(hass, entry)
+
+    assert state(hass, "sensor", "heating_status").state == "sensor_unavailable"
+    assert pump.writes == [{"HeWatOutTemSet": 26}]
 
 
 # Dashboard card

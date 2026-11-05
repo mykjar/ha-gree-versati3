@@ -109,13 +109,14 @@ In the simulated house, with forecasts that are wrong in realistic ways, the roo
 | Status | Meaning |
 | --- | --- |
 | Active | In control; changes the setpoint when needed. |
+| Following the curve: indoor reading is old | The indoor sensor shows a number but hasn't reported for 12 hours, as an average that never changes may not. Control follows the curve and the learned offset, without room correction. Learning waits until the sensor reports again. |
 | Advisory only | Calculating; `Write to pump` is off. |
 | Waiting to change the setpoint | A change is due but waits for the 30-minute gap. |
 | Paused after a manual change | The setpoint was changed elsewhere; control waits. |
 | Paused | The thermostat is Off. |
 | Pump off, Pump not in a heating mode, Pump error, Pump unavailable | Nothing is written until the pump is heating normally again. |
 | Pump's own weather curve is on | W-depend is on, so the pump would ignore the setpoint. |
-| Sensor unavailable | The indoor or outdoor reading is missing, or has been silent for 12 hours. |
+| Sensor unavailable | The indoor or outdoor reading is missing, or the outdoor one hasn't reported for 12 hours. |
 | Setpoint change failed, Pump ignored the setpoint change | The last change didn't take; it is retried after 30 minutes. |
 
 #### Tuning
@@ -141,7 +142,7 @@ hours_to_show: 72  # optional
 ```
 
 It shows up to three graphs:
-- **Floor heating water:** the controller's target and the curve on its own, against the pump's setpoint and the measured water. In advisory mode this is where you see what it would do.
+- **Floor heating water:** the controller's target and the curve on its own, against the pump's setpoint and the measured water, with the controller's status as a timeline underneath. In advisory mode this is where you see what it would do.
 - **Room and outdoor:** the room against its target, with heating periods shaded, the outdoor temperature the curve uses and, with a forecast, the outdoor temperature over the next hours.
 - **Adjustments:** the sun cut and the learned offset, in °C.
 

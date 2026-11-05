@@ -18,6 +18,8 @@ class Status(StrEnum):
     """What the controller is doing, or why it is leaving the pump alone."""
 
     ACTIVE = "active"
+    # In control on the curve alone: the indoor reading is too old to use.
+    INDOOR_OLD = "indoor_old"
     ADVISORY = "advisory"
     PAUSED = "paused"
     MANUAL_OVERRIDE = "manual_override"
@@ -121,18 +123,21 @@ class ControlState:
 class Inputs:
     """One reading of everything the controller looks at.
 
-    ``hold`` is a pump-side reason not to write, decided by the integration.
-    ``space_heating`` is False while the pump is busy with something else
-    (defrost, a hot-water cycle), when room readings say little about the curve.
-    ``outdoor_ahead`` is the outdoor temperature looking ahead with the forecast,
-    used by the curve instead of the reading. ``sun_cut`` lowers the curve
-    ahead of forecast sun.
+    ``indoor_old`` says the indoor reading is a number the sensor hasn't
+    reported for a long time: too old to correct the room by, so control
+    follows the curve alone. ``hold`` is a pump-side reason not to write,
+    decided by the integration. ``space_heating`` is False while the pump is
+    busy with something else (defrost, a hot-water cycle), when room readings
+    say little about the curve. ``outdoor_ahead`` is the outdoor temperature
+    looking ahead with the forecast, used by the curve instead of the reading.
+    ``sun_cut`` lowers the curve ahead of forecast sun.
     """
 
     now: float
     outdoor: float | None
     indoor: float | None
     setpoint: int | None
+    indoor_old: bool = False
     hold: Status | None = None
     space_heating: bool = True
     outdoor_ahead: float | None = None
@@ -291,7 +296,8 @@ class HeatingCore:
         if outdoor is not None and inputs.indoor is not None:
             curve_flow = settings.curve.flow(outdoor, state.room_target)
             lowered = curve_flow - inputs.sun_cut
-            error = state.room_target - inputs.indoor
+            # An old indoor reading gives no room error to correct by.
+            error = 0.0 if inputs.indoor_old else state.room_target - inputs.indoor
             if self._learning_allowed(inputs, now, lowered, error):
                 hours = min(elapsed, settings.max_learning_seconds) / 3600
                 state.learned = _clamp(
@@ -306,6 +312,8 @@ class HeatingCore:
 
         status = self._status(inputs, now, target, suggested)
         write = suggested if status is Status.ACTIVE and suggested != inputs.setpoint else None
+        if status is Status.ACTIVE and inputs.indoor_old:
+            status = Status.INDOOR_OLD  # Still in control, on the curve alone.
         return Decision(
             status=status,
             outdoor=outdoor,
@@ -358,7 +366,7 @@ class HeatingCore:
             return False
         if state.override_until is not None or inputs.hold is not None:
             return False
-        if not inputs.space_heating:
+        if not inputs.space_heating or inputs.indoor_old:
             return False
         if (
             state.room_target_changed_at is not None

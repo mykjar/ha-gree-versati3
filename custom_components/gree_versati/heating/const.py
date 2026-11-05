@@ -44,7 +44,9 @@ LIVE_OPTIONS: Final = frozenset(
 )
 
 UPDATE_INTERVAL: Final = timedelta(minutes=5)
-# A reading this old counts as missing, even if the sensor still reports it.
+# A reading the sensor hasn't reported for this long is old, even if it still
+# shows a number. An old outdoor reading counts as missing; an old indoor one
+# only stops the room correction and learning.
 STALE_AFTER: Final = timedelta(hours=12)
 # Measured water this far from the setpoint means the pump is busy with
 # something else (hot water, defrost), not heating the floor.
