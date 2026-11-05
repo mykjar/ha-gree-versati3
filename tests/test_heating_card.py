@@ -70,6 +70,7 @@ ENTITIES = {
         entry("sensor.setpoint_reading", "he_wat_out_tem_set"),
         entry("number.setpoint", "he_wat_out_tem_set"),
         entry("sensor.water_out", "all_out_wat_tem"),
+        entry("sensor.status", "heating_status"),
         entry("sensor.outdoor", "heating_outdoor_temperature"),
         entry("sensor.outdoor_ahead", "heating_forecast_outdoor_temperature"),
         entry("sensor.sun_cut", "heating_sun_cut"),
@@ -123,6 +124,8 @@ def test_shows_the_controllers_water_and_room(js: Any) -> None:
             {"entity": "sensor.curve", "name": "Curve only"},
             {"entity": "number.setpoint", "name": "Pump setpoint"},
             {"entity": "sensor.water_out", "name": "Water out (measured)"},
+            # Not a number: drawn as a timeline, labelled with its translated states.
+            {"entity": "sensor.status", "name": "Controller status"},
         ],
     }
     assert room["entities"] == [
