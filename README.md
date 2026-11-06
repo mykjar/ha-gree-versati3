@@ -65,6 +65,7 @@ The result is kept within 20–30 °C by default and rounded to whole degrees. T
 
 - The pump must control by water temperature, with its own weather curve (W-depend) off. If W-depend is on, the controller won't write and says why.
 - You need indoor and outdoor temperature sensors from any integration. Averages work best.
+- With a sensor in each room, combine them in a `Combine the state of several sensors` helper with `Statistic characteristic` set to `Median`, not `Mean`. A room warmed by cooking, computers or sun then doesn't turn the floor down for the whole house, and a naturally cool corner room doesn't turn it up. Unavailable sensors are left out.
 - Optional: a weather entity with an hourly forecast. Home Assistant's built-in `weather.forecast_home` (Met.no) works.
 
 #### Setting it up
