@@ -20,6 +20,10 @@ _Avoid_: floor mode, heating mode
 
 ### The forecast
 
+**Forecast source**:
+The weather entity's hourly forecast as floor heating control uses it: the last good forecast, and whether it is fresh enough to use.
+_Avoid_: weather provider, forecast service
+
 **Look-ahead**:
 Using the average of the outdoor temperature now and the forecast for the next few hours in place of today's outdoor temperature, as a floor answers hours late.
 _Avoid_: prediction, forecast temperature

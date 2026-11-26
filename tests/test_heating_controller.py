@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Iterator
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
@@ -42,13 +38,7 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import (
-    CoreState,
-    HomeAssistant,
-    ServiceCall,
-    ServiceResponse,
-    SupportsResponse,
-)
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -87,6 +77,8 @@ from custom_components.gree_versati.heating.const import (
     UPDATE_INTERVAL,
 )
 from custom_components.gree_versati.heating.controller import HeatingController
+
+from .fake_weather import MORNING, WEATHER, give_up_on_forecast, let_time_pass, provide_forecast
 
 DEVICE_ID = "502cc62fc0be"
 INDOOR = "sensor.indoor_average"
@@ -815,88 +807,6 @@ async def test_smoothed_outdoor_temperature_sensor(hass: HomeAssistant, pump: Fa
 
 # Weather forecast
 
-WEATHER = "weather.forecast_home"
-# Clear-sky midday falls 2-6 h after this in the test location (San Diego).
-MORNING = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
-
-
-class FakeWeather:
-    """A weather entity's hourly forecast service, which can stop answering."""
-
-    def __init__(self, items: list[dict[str, Any]]) -> None:
-        self.items = items
-        self.requests = 0
-        self.hung = False
-        self.waiting = 0  # Requests it hasn't answered yet.
-        self._request_hung = asyncio.Event()
-
-    async def get_forecasts(self, call: ServiceCall) -> ServiceResponse:
-        self.requests += 1
-        if self.hung:
-            self.waiting += 1
-            self._request_hung.set()
-            try:
-                await asyncio.get_running_loop().create_future()  # Never answers.
-            finally:
-                self.waiting -= 1
-        return {WEATHER: {"forecast": self.items}}
-
-    async def start_until_hung[T](self, step: Awaitable[T]) -> asyncio.Future[T]:
-        """Start a step and return once it waits for a hung request (or ends)."""
-        self._request_hung.clear()
-        # Home Assistant doesn't track this task, so it can wait for everything else.
-        task = asyncio.ensure_future(step)
-        hung = asyncio.ensure_future(self._request_hung.wait())
-        await asyncio.wait({task, hung}, return_when=asyncio.FIRST_COMPLETED)
-        hung.cancel()
-        return task
-
-
-def provide_forecast(
-    hass: HomeAssistant, *, temperature: float, cloud: float, unit: str = "°C"
-) -> FakeWeather:
-    """A weather entity whose hourly forecast stays the same for 12 hours."""
-    hass.states.async_set(WEATHER, "sunny", {"temperature_unit": unit})
-    weather = FakeWeather(
-        [
-            {
-                "datetime": (MORNING + timedelta(hours=hour)).isoformat(),
-                "temperature": temperature,
-                "cloud_coverage": cloud,
-            }
-            for hour in range(13)
-        ]
-    )
-    hass.services.async_register(
-        "weather",
-        "get_forecasts",
-        weather.get_forecasts,
-        supports_response=SupportsResponse.ONLY,
-    )
-    return weather
-
-
-async def give_up_on_forecast[T](
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, weather: FakeWeather, step: Awaitable[T]
-) -> T:
-    """Run a step while the forecast hangs, until it carries on without it."""
-    weather.hung = True
-    task = await weather.start_until_hung(step)
-    await let_time_pass(hass, freezer, 31)
-    weather.hung = False
-    # Fail rather than wait forever if the step never gives up.
-    assert weather.waiting == 0
-    return await task
-
-
-async def let_time_pass(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, seconds: float
-) -> None:
-    freezer.tick(timedelta(seconds=seconds))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-
-
 FORECAST_OPTIONS = {**HEATING_OPTIONS, CONF_WEATHER_ENTITY: WEATHER}
 
 
@@ -927,18 +837,6 @@ async def test_forecast_looks_ahead_and_cuts_for_sun(
     )
 
 
-async def test_cloudy_forecast_cuts_nothing(
-    hass: HomeAssistant, pump: FakePump, freezer: FrozenDateTimeFactory
-) -> None:
-    freezer.move_to(MORNING)
-    provide_forecast(hass, temperature=4.0, cloud=100)
-
-    entry = await setup(hass, FORECAST_OPTIONS)
-
-    assert controller(hass, entry).data.sun_cut == 0
-    assert controller(hass, entry).data.outdoor_ahead == pytest.approx(32 / 9, abs=0.01)
-
-
 async def test_without_a_forecast_control_carries_on(
     hass: HomeAssistant, pump: FakePump, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -954,7 +852,7 @@ async def test_without_a_forecast_control_carries_on(
     assert caplog.text.count("No hourly forecast from weather.forecast_home") == 1
 
 
-async def test_a_hung_forecast_is_abandoned_after_30_s(
+async def test_a_hung_forecast_does_not_stall_startup(
     hass: HomeAssistant,
     pump: FakePump,
     freezer: FrozenDateTimeFactory,
@@ -962,16 +860,8 @@ async def test_a_hung_forecast_is_abandoned_after_30_s(
 ) -> None:
     freezer.move_to(MORNING)
     weather = provide_forecast(hass, temperature=4.0, cloud=0)
-    weather.hung = True
 
-    starting = await weather.start_until_hung(setup(hass, FORECAST_OPTIONS))
-    assert weather.waiting == 1
-
-    await let_time_pass(hass, freezer, 25)
-    assert weather.waiting == 1
-    await let_time_pass(hass, freezer, 6)
-    assert weather.waiting == 0
-    entry = await starting
+    entry = await give_up_on_forecast(hass, freezer, weather, setup(hass, FORECAST_OPTIONS))
 
     decision = controller(hass, entry).data
     assert decision.outdoor_ahead is None
@@ -980,32 +870,6 @@ async def test_a_hung_forecast_is_abandoned_after_30_s(
     assert state(hass, "sensor", "heating_status").state == "advisory"
     assert caplog.text.count("No hourly forecast from weather.forecast_home") == 1
     assert "no answer within 30 s" in caplog.text
-
-
-async def test_after_a_hung_forecast_the_next_request_waits_for_the_refresh(
-    hass: HomeAssistant,
-    pump: FakePump,
-    freezer: FrozenDateTimeFactory,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    freezer.move_to(MORNING)
-    weather = provide_forecast(hass, temperature=4.0, cloud=0)
-    entry = await give_up_on_forecast(hass, freezer, weather, setup(hass, FORECAST_OPTIONS))
-
-    freezer.tick(UPDATE_INTERVAL)
-    await poll(hass, entry)
-    assert weather.requests == 1
-
-    freezer.move_to(MORNING + FORECAST_REFRESH)
-    await give_up_on_forecast(hass, freezer, weather, poll(hass, entry))
-    assert weather.requests == 2
-    assert caplog.text.count("No hourly forecast from weather.forecast_home") == 1
-
-    freezer.move_to(MORNING + 2 * FORECAST_REFRESH)
-    await poll(hass, entry)
-    assert weather.requests == 3
-    assert controller(hass, entry).data.outdoor_ahead == pytest.approx(32 / 9, abs=0.01)
-    assert "Hourly forecast from weather.forecast_home is back" in caplog.text
 
 
 UNUSED_FORECAST_OPTIONS = {**FORECAST_OPTIONS, CONF_LOOKAHEAD_HOURS: 0.0, CONF_SUN_CUT_MAX: 0.0}
@@ -1102,4 +966,4 @@ async def test_clearing_the_forecast_turns_it_off(hass: HomeAssistant, pump: Fak
     await hass.async_block_till_done()
 
     assert entry.options[CONF_WEATHER_ENTITY] == ""
-    assert controller(hass, entry).weather_entity_id is None
+    assert controller(hass, entry).forecast is None
