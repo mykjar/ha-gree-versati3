@@ -85,7 +85,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         )
         self._loaded = False
         weather_entity_id = entry.options.get(CONF_WEATHER_ENTITY)
-        self.forecast = ForecastSource(hass, weather_entity_id) if weather_entity_id else None
+        self.forecast_source = (
+            ForecastSource(hass, weather_entity_id) if weather_entity_id else None
+        )
 
     async def async_load(self) -> None:
         """Pick up where the controller left off before a restart."""
@@ -109,8 +111,8 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         outdoor = self.temperature(self.outdoor_entity_id)
         indoor, indoor_old = self._reading(self.indoor_entity_id)
         outdoor_ahead, sun_cut = (
-            await self.forecast.async_inputs(outdoor, self.core.settings, now)
-            if self.forecast
+            await self.forecast_source.async_inputs(outdoor, self.core.settings, now)
+            if self.forecast_source is not None
             else (None, 0.0)
         )
         decision = self.core.step(
@@ -278,8 +280,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         self._options = dict(options)
         used_forecast = self.core.settings.uses_forecast
         self.core.settings = settings_from_options(options)
-        if self.forecast and self.core.settings.uses_forecast and not used_forecast:
-            self.forecast.ask_now()
+        source = self.forecast_source
+        if source is not None and self.core.settings.uses_forecast and not used_forecast:
+            source.ask_now()
         self.async_update_listeners()
         self.hass.async_create_task(self.async_request_refresh())
         return True

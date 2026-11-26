@@ -966,4 +966,4 @@ async def test_clearing_the_forecast_turns_it_off(hass: HomeAssistant, pump: Fak
     await hass.async_block_till_done()
 
     assert entry.options[CONF_WEATHER_ENTITY] == ""
-    assert controller(hass, entry).forecast is None
+    assert controller(hass, entry).forecast_source is None

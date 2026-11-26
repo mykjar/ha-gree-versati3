@@ -140,17 +140,24 @@ async def test_a_forecast_older_than_3_hours_is_dropped(
     assert await inputs(source) == (None, 0.0)
 
 
+# 0 °C on even hours and 4 °C on odd ones, so the order matters.
 @pytest.mark.parametrize(
     "items",
     [
         # Out of order, with an unusable entry.
         [
-            {"datetime": (MORNING + timedelta(hours=hour)).isoformat(), "temperature": 4.0}
+            {
+                "datetime": (MORNING + timedelta(hours=hour)).isoformat(),
+                "temperature": 4.0 * (hour % 2),
+            }
             for hour in (6, 2, 0, 4, 1, 5, 3)
         ]
         + [{"datetime": "not a time", "temperature": 30.0}],
         # Times as datetimes rather than text.
-        [{"datetime": MORNING + timedelta(hours=hour), "temperature": 4.0} for hour in range(7)],
+        [
+            {"datetime": MORNING + timedelta(hours=hour), "temperature": 4.0 * (hour % 2)}
+            for hour in range(7)
+        ],
     ],
 )
 async def test_reads_the_forecast_entries(
@@ -162,4 +169,5 @@ async def test_reads_the_forecast_entries(
 
     ahead, _ = await inputs(ForecastSource(hass, WEATHER))
 
-    assert ahead == pytest.approx(32 / 9, abs=0.01)
+    # Now 0 °C, then 2, 4, 2, 0, 2, 4, 2, 0 °C for each half hour of the next 4 h.
+    assert ahead == pytest.approx(16 / 9, abs=0.01)
