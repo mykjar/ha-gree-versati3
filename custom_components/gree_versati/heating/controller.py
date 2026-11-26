@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import datetime
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -38,9 +36,6 @@ from .const import (
     CONF_INDOOR_SENSOR,
     CONF_OUTDOOR_SENSOR,
     CONF_WEATHER_ENTITY,
-    FORECAST_MAX_AGE,
-    FORECAST_REFRESH,
-    FORECAST_TIMEOUT,
     LIVE_OPTIONS,
     STALE_AFTER,
     STORAGE_VERSION,
@@ -50,15 +45,7 @@ from .const import (
     storage_key,
 )
 from .curve import ControlState, Decision, HeatingCore, Inputs, Status, calibrated_curve
-from .forecast import (
-    HourlyForecast,
-    clear_sky,
-    cloud_at,
-    lookahead_outdoor,
-    parse_hour,
-    sun_score,
-    window_times,
-)
+from .forecast_source import ForecastSource
 from .options import validate_heating
 from .pump import PumpReading, read_pump
 
@@ -81,7 +68,6 @@ class HeatingController(DataUpdateCoordinator[Decision]):
     ) -> None:
         self.indoor_entity_id: str = entry.options[CONF_INDOOR_SENSOR]
         self.outdoor_entity_id: str = entry.options[CONF_OUTDOOR_SENSOR]
-        self.weather_entity_id: str | None = entry.options.get(CONF_WEATHER_ENTITY) or None
         # Also arranges for async_shutdown to run when the entry unloads.
         super().__init__(
             hass,
@@ -98,10 +84,10 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             hass, STORAGE_VERSION, storage_key(entry.entry_id)
         )
         self._loaded = False
-        self._forecast: list[HourlyForecast] = []
-        self._forecast_fetched: datetime | None = None
-        self._forecast_tried: datetime | None = None
-        self._forecast_failing = False
+        weather_entity_id = entry.options.get(CONF_WEATHER_ENTITY)
+        self.forecast_source = (
+            ForecastSource(hass, weather_entity_id) if weather_entity_id else None
+        )
 
     async def async_load(self) -> None:
         """Pick up where the controller left off before a restart."""
@@ -124,7 +110,11 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         # without it. An old indoor one only stops the room correction.
         outdoor = self.temperature(self.outdoor_entity_id)
         indoor, indoor_old = self._reading(self.indoor_entity_id)
-        outdoor_ahead, sun_cut = await self._async_forecast_inputs(outdoor, now)
+        outdoor_ahead, sun_cut = (
+            await self.forecast_source.async_inputs(outdoor, self.core.settings, now)
+            if self.forecast_source is not None
+            else (None, 0.0)
+        )
         decision = self.core.step(
             Inputs(
                 now=now,
@@ -172,108 +162,6 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         )
         await self.pump.async_request_refresh()
         return decision
-
-    async def _async_forecast_inputs(
-        self, outdoor: float | None, now: float
-    ) -> tuple[float | None, float]:
-        """Look-ahead outdoor temperature and sun cut; (None, 0) without a forecast."""
-        settings = self.core.settings
-        if self.weather_entity_id is None or outdoor is None or not settings.uses_forecast:
-            return None, 0.0
-        forecast = await self._async_forecast()
-        if not forecast:
-            return None, 0.0
-        ahead = lookahead_outdoor(outdoor, forecast, now, settings.lookahead_hours)
-        sun_cut = 0.0
-        if settings.sun_cut_max > 0:
-            sun_cut = settings.sun_cut_max * self._sun_score(forecast, now)
-        return ahead, sun_cut
-
-    def _sun_score(self, forecast: list[HourlyForecast], now: float) -> float:
-        """Forecast sun a few hours ahead, 0..1, using the real sun at this location."""
-        import astral  # noqa: PLC0415 - Home Assistant loads astral lazily too
-        import astral.sun  # noqa: PLC0415
-
-        config = self.hass.config
-        observer = astral.Observer(config.latitude, config.longitude, config.elevation)
-
-        def clear(at: float) -> float:
-            return clear_sky(astral.sun.elevation(observer, dt_util.utc_from_timestamp(at)))
-
-        start, end = self.core.settings.sun_window_hours
-        window = []
-        for at in window_times(now, start, end):
-            cloud = cloud_at(forecast, at)
-            if cloud is None:
-                return 0.0
-            window.append((clear(at), cloud))
-
-        # Compare with a clear sky over the sunniest stretch of that day.
-        middle = dt_util.as_local(dt_util.utc_from_timestamp(now + (start + end) / 2 * 3600))
-        noon = astral.sun.noon(observer, middle.date()).timestamp()
-        best = window_times(noon, -(end - start) / 2, (end - start) / 2)
-        return sun_score(window, sum(clear(at) for at in best) / len(best))
-
-    async def _async_forecast(self) -> list[HourlyForecast]:
-        """The hourly forecast, fetched at most every half hour; [] if too old."""
-        now = dt_util.utcnow()
-        if self._forecast_tried is None or now - self._forecast_tried >= FORECAST_REFRESH:
-            self._forecast_tried = now
-            await self._async_fetch_forecast(now)
-        if self._forecast_fetched is None or now - self._forecast_fetched > FORECAST_MAX_AGE:
-            return []
-        return self._forecast
-
-    async def _async_fetch_forecast(self, now: datetime) -> None:
-        timeout = asyncio.timeout(FORECAST_TIMEOUT.total_seconds())
-        try:
-            async with timeout:
-                response = await self.hass.services.async_call(
-                    "weather",
-                    "get_forecasts",
-                    {"type": "hourly"},
-                    target={"entity_id": self.weather_entity_id},
-                    blocking=True,
-                    return_response=True,
-                )
-            items = response[self.weather_entity_id]["forecast"]
-            forecast = self._parse_forecast(items)
-        except Exception as err:  # A forecast must never stop floor heating control.
-            if not self._forecast_failing:
-                _LOGGER.warning(
-                    "No hourly forecast from %s; floor heating carries on without it: %s",
-                    self.weather_entity_id,
-                    f"no answer within {FORECAST_TIMEOUT.total_seconds():.0f} s"
-                    if timeout.expired()
-                    else err,
-                )
-            self._forecast_failing = True
-            return
-        if self._forecast_failing:
-            _LOGGER.info("Hourly forecast from %s is back", self.weather_entity_id)
-        self._forecast_failing = False
-        self._forecast = forecast
-        self._forecast_fetched = now
-
-    def _parse_forecast(self, items: list[Mapping[str, Any]]) -> list[HourlyForecast]:
-        state = self.hass.states.get(self.weather_entity_id or "")
-        unit = (state.attributes.get("temperature_unit") if state else None) or (
-            self.hass.config.units.temperature_unit
-        )
-
-        def to_celsius(value: float) -> float:
-            if unit == UnitOfTemperature.CELSIUS:
-                return value
-            return TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
-
-        def parse_time(value: Any) -> float | None:
-            if isinstance(value, datetime):
-                return value.timestamp()
-            parsed = dt_util.parse_datetime(value) if isinstance(value, str) else None
-            return parsed.timestamp() if parsed else None
-
-        hours = [parse_hour(item, parse_time, to_celsius) for item in items]
-        return sorted((hour for hour in hours if hour is not None), key=lambda hour: hour.start)
 
     @property
     def pump_reading(self) -> PumpReading:
@@ -392,9 +280,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         self._options = dict(options)
         used_forecast = self.core.settings.uses_forecast
         self.core.settings = settings_from_options(options)
-        if self.core.settings.uses_forecast and not used_forecast:
-            # Back in use: ask now rather than at the next half-hourly refresh.
-            self._forecast_tried = None
+        source = self.forecast_source
+        if source is not None and self.core.settings.uses_forecast and not used_forecast:
+            source.ask_now()
         self.async_update_listeners()
         self.hass.async_create_task(self.async_request_refresh())
         return True
