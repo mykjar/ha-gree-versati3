@@ -120,7 +120,8 @@ class FloorHeatingClimate(HeatingEntity, ClimateEntity):
         """Whether the pump is delivering heat."""
         if not self.coordinator.core.state.active:
             return HVACAction.OFF
-        return HVACAction.HEATING if self.coordinator.pump_reading.delivering_heat else HVACAction.IDLE
+        delivering = self.coordinator.pump_reading.delivering_heat
+        return HVACAction.HEATING if delivering else HVACAction.IDLE
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

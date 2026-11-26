@@ -12,7 +12,7 @@ _Avoid_: pump state, pump data, pump status
 
 **Hold**:
 A reason on the pump's side not to change the setpoint, such as the pump being off, in error, not in a heating mode, or on its own weather curve.
-_Avoid_: block, lock, pump status
+_Avoid_: block, lock
 
 **Space heating**:
 The pump is heating the floor, rather than defrosting or making hot water.

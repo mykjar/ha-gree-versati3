@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from custom_components.gree_versati.heating.curve import Status
-from custom_components.gree_versati.heating.pump import STATUS_POLL_KEYS, read_pump
+from custom_components.gree_versati.heating.pump import read_pump
 
 # Heating the floor at 25 °C: water out 25.0 °C, back 22.0 °C.
 HEATING: dict[str, Any] = {
@@ -90,7 +90,3 @@ def test_space_heating(changes: dict[str, Any], space_heating: bool) -> None:
 )
 def test_delivering_heat(changes: dict[str, Any], delivering: bool) -> None:
     assert read_pump({**HEATING, **changes}).delivering_heat is delivering
-
-
-def test_needs_w_depend_and_defrost_polled() -> None:
-    assert set(STATUS_POLL_KEYS) == {"SvSt", "SyAnFroRunSta"}

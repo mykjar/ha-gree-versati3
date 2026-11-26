@@ -1,6 +1,6 @@
 """What the pump's raw values mean for floor heating control.
 
-Pure Python with no Home Assistant imports, like curve.py: the controller
+Plain Python on plain values, with no Home Assistant calls: the controller
 hands over the pump coordinator's data and gets a reading back.
 """
 

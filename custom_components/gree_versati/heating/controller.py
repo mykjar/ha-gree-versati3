@@ -64,6 +64,7 @@ from .pump import PumpReading, read_pump
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def _same_option(old: Any, new: Any) -> bool:
     # An empty entity field ("") and a missing option both mean none.
     return old == new or (old in (None, "") and new in (None, ""))
@@ -116,9 +117,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             await self._store.async_save(self.core.state.as_dict())
 
     async def _async_update_data(self) -> Decision:
-        pump = self.pump_reading
+        reading = self.pump_reading
         now = dt_util.utcnow().timestamp()
-        setpoint = pump.setpoint
+        setpoint = reading.setpoint
         # An old outdoor reading counts as missing, as the curve can't do
         # without it. An old indoor one only stops the room correction.
         outdoor = self.temperature(self.outdoor_entity_id)
@@ -131,8 +132,8 @@ class HeatingController(DataUpdateCoordinator[Decision]):
                 indoor=indoor,
                 indoor_old=indoor_old,
                 setpoint=setpoint,
-                hold=pump.hold,
-                space_heating=pump.space_heating,
+                hold=reading.hold,
+                space_heating=reading.space_heating,
                 outdoor_ahead=outdoor_ahead,
                 sun_cut=sun_cut,
             )
