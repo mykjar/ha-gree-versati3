@@ -10,11 +10,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from ..constants import STATUS_POLL_KEYS
 from ..coordinator import GreeVersatiCoordinator
 from .card import async_register_card
 from .const import CONF_HEATING_ENABLED, STORAGE_VERSION, storage_key
 from .controller import HeatingController
+from .pump import STATUS_POLL_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 

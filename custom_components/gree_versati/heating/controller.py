@@ -29,20 +29,10 @@ from ..constants import (
     DOMAIN,
     MAX_HE_WAT_OUT_TEMP_SET,
     MIN_HE_WAT_OUT_TEMP_SET,
-    MODE_OPTIONS,
-    PARAM_ALL_ERR,
-    PARAM_ALL_IN_WAT_TEM,
-    PARAM_ALL_OUT_WAT_TEM,
     PARAM_HE_WAT_OUT_TEM_SET,
-    PARAM_MOD,
-    PARAM_POW,
-    PARAM_SV_ST,
-    PARAM_SY_AN_FRO_RUN_STA,
 )
 from ..coordinator import GreeVersatiCoordinator
-from ..temperature import decode_measured_temperature
 from .const import (
-    BUSY_FLOW_DIFFERENCE,
     CONF_CURVE_COLD_FLOW,
     CONF_CURVE_MILD_FLOW,
     CONF_INDOOR_SENSOR,
@@ -70,53 +60,14 @@ from .forecast import (
     window_times,
 )
 from .options import validate_heating
+from .pump import PumpReading, read_pump
 
 _LOGGER = logging.getLogger(__name__)
-
-HEATING_MODES = frozenset({MODE_OPTIONS["Heat"], MODE_OPTIONS["Heat + hot water"]})
-
-
-def _as_int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _same_option(old: Any, new: Any) -> bool:
     # An empty entity field ("") and a missing option both mean none.
     return old == new or (old in (None, "") and new in (None, ""))
-
-
-def pump_hold(data: Mapping[str, Any] | None) -> Status | None:
-    """Pump-side reason not to change the setpoint, if there is one."""
-    if not data:
-        return Status.PUMP_UNAVAILABLE
-    if _as_int(data.get(PARAM_POW)) != 1:
-        return Status.PUMP_OFF
-    if _as_int(data.get(PARAM_MOD)) not in HEATING_MODES:
-        return Status.NOT_HEATING
-    error = data.get(PARAM_ALL_ERR)
-    if error not in (None, "") and _as_int(error) != 0:
-        return Status.PUMP_ERROR
-    if _as_int(data.get(PARAM_SV_ST)) == 1:
-        return Status.W_DEPEND_ON
-    return None
-
-
-def space_heating(data: Mapping[str, Any] | None) -> bool:
-    """False while the pump is defrosting or busy with hot water."""
-    if not data:
-        return False
-    if _as_int(data.get(PARAM_SY_AN_FRO_RUN_STA)) == 1:
-        return False
-    flow = decode_measured_temperature(data, PARAM_ALL_OUT_WAT_TEM)
-    setpoint = _as_int(data.get(PARAM_HE_WAT_OUT_TEM_SET))
-    if flow is not None and setpoint is not None:
-        return abs(flow - setpoint) <= BUSY_FLOW_DIFFERENCE
-    return True
 
 
 class HeatingController(DataUpdateCoordinator[Decision]):
@@ -166,9 +117,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
             await self._store.async_save(self.core.state.as_dict())
 
     async def _async_update_data(self) -> Decision:
-        pump = self._pump_data
+        reading = self.pump_reading
         now = dt_util.utcnow().timestamp()
-        setpoint = _as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None
+        setpoint = reading.setpoint
         # An old outdoor reading counts as missing, as the curve can't do
         # without it. An old indoor one only stops the room correction.
         outdoor = self.temperature(self.outdoor_entity_id)
@@ -181,8 +132,8 @@ class HeatingController(DataUpdateCoordinator[Decision]):
                 indoor=indoor,
                 indoor_old=indoor_old,
                 setpoint=setpoint,
-                hold=pump_hold(pump),
-                space_heating=space_heating(pump),
+                hold=reading.hold,
+                space_heating=reading.space_heating,
                 outdoor_ahead=outdoor_ahead,
                 sun_cut=sun_cut,
             )
@@ -325,22 +276,9 @@ class HeatingController(DataUpdateCoordinator[Decision]):
         return sorted((hour for hour in hours if hour is not None), key=lambda hour: hour.start)
 
     @property
-    def _pump_data(self) -> Mapping[str, Any] | None:
-        return self.pump.data if self.pump.last_update_success else None
-
-    @property
-    def pump_heating(self) -> bool:
-        """Whether the pump is delivering heat right now."""
-        data = self._pump_data
-        if data is None or pump_hold(data) in (
-            Status.PUMP_UNAVAILABLE,
-            Status.PUMP_OFF,
-            Status.NOT_HEATING,
-        ):
-            return False
-        flow = decode_measured_temperature(data, PARAM_ALL_OUT_WAT_TEM)
-        inlet = decode_measured_temperature(data, PARAM_ALL_IN_WAT_TEM)
-        return flow is not None and inlet is not None and flow > inlet + 0.5
+    def pump_reading(self) -> PumpReading:
+        """The pump as it is now, from its latest data."""
+        return read_pump(self.pump.data if self.pump.last_update_success else None)
 
     def temperature(self, entity_id: str) -> float | None:
         """A sensor's temperature in °C, or None if it can't be trusted."""
@@ -404,8 +342,7 @@ class HeatingController(DataUpdateCoordinator[Decision]):
 
     async def async_calibrate(self) -> None:
         """Shift the curve so it matches the setpoint the pump runs on now."""
-        pump = self._pump_data
-        setpoint = _as_int(pump.get(PARAM_HE_WAT_OUT_TEM_SET)) if pump else None
+        setpoint = self.pump_reading.setpoint
         indoor = self.temperature(self.indoor_entity_id)
         outdoor = self.core.state.smoothed_outdoor
         if outdoor is None:
