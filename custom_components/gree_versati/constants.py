@@ -93,7 +93,6 @@ SETTING_POLL_KEYS: Final[tuple[str, ...]] = (PARAM_HET_HT_WTER,)
 # it is on the pump works out its own water setpoint.
 PARAM_SV_ST: Final = "SvSt"
 PARAM_SY_AN_FRO_RUN_STA: Final = "SyAnFroRunSta"
-STATUS_POLL_KEYS: Final[tuple[str, ...]] = (PARAM_SV_ST, PARAM_SY_AN_FRO_RUN_STA)
 
 # After a failed measurement or status request, skip it for this long before
 # retrying.

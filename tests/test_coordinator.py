@@ -16,9 +16,9 @@ from custom_components.gree_versati.constants import (
     MEASUREMENT_RETRY_BACKOFF_SECONDS,
     POLL_KEYS,
     SETTING_POLL_KEYS,
-    STATUS_POLL_KEYS,
 )
 from custom_components.gree_versati.coordinator import GreeVersatiCoordinator
+from custom_components.gree_versati.heating.pump import STATUS_POLL_KEYS
 
 MAIN_VALUES = {"HeWatOutTemSet": 35, "Pow": 1, "Mod": 1, "AllErr": 0}
 MEASUREMENT_VALUES = {"AllOutWatTemHi": 132, "AllOutWatTemLo": 2}

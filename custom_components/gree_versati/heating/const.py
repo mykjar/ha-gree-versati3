@@ -48,9 +48,6 @@ UPDATE_INTERVAL: Final = timedelta(minutes=5)
 # shows a number. An old outdoor reading counts as missing; an old indoor one
 # only stops the room correction and learning.
 STALE_AFTER: Final = timedelta(hours=12)
-# Measured water this far from the setpoint means the pump is busy with
-# something else (hot water, defrost), not heating the floor.
-BUSY_FLOW_DIFFERENCE: Final = 8.0
 # How often to fetch the hourly forecast, and how old it may get before the
 # controller carries on without it.
 FORECAST_REFRESH: Final = timedelta(minutes=30)
